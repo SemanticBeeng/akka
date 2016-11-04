@@ -7,6 +7,8 @@
 *.tm.epoch
 *.vim
 */project/boot
+project/.boot/
+project/.ivy/
 */project/build/target
 */project/project.target.config-classes
 *~
