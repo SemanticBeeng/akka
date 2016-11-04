@@ -25,7 +25,7 @@ The ``application.conf`` configuration looks like this:
 .. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/main/resources/application.conf#snippet
 
 To enable cluster capabilities in your Akka project you should, at a minimum, add the :ref:`remoting-scala`
-settings, but with ``akka.cluster.ClusterActorRefProvider``.
+settings, but with ``cluster``.
 The ``akka.cluster.seed-nodes`` should normally also be added to your ``application.conf`` file.
 
 .. note::
@@ -143,7 +143,7 @@ described there.
 Auto-downing (DO NOT USE)
 -------------------------
 
-There is an atomatic downing feature that you should not use in production. For testing purpose you can enable it with configuration::
+There is an automatic downing feature that you should not use in production. For testing purpose you can enable it with configuration::
 
       akka.cluster.auto-down-unreachable-after = 120s
 
@@ -320,6 +320,8 @@ The roles of a node is defined in the configuration property named ``akka.cluste
 and it is typically defined in the start script as a system property or environment variable.
 
 The roles of the nodes is part of the membership information in ``MemberEvent`` that you can subscribe to.
+
+.. _min-members_scala:
 
 How To Startup when Cluster Size Reached
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

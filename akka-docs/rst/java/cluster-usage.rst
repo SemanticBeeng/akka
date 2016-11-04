@@ -31,7 +31,7 @@ The ``application.conf`` configuration looks like this:
 .. includecode:: ../../../akka-samples/akka-sample-cluster-java/src/main/resources/application.conf#snippet
 
 To enable cluster capabilities in your Akka project you should, at a minimum, add the :ref:`remoting-java`
-settings, but with ``akka.cluster.ClusterActorRefProvider``.
+settings, but with ``cluster``.
 The ``akka.cluster.seed-nodes`` should normally also be added to your ``application.conf`` file.
 
 .. note::
@@ -324,6 +324,8 @@ The roles of a node is defined in the configuration property named ``akka.cluste
 and it is typically defined in the start script as a system property or environment variable.
 
 The roles of the nodes is part of the membership information in ``MemberEvent`` that you can subscribe to.
+
+.. _min-members_java:
 
 How To Startup when Cluster Size Reached
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

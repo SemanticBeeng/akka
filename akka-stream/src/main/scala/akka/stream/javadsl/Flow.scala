@@ -3,18 +3,20 @@
  */
 package akka.stream.javadsl
 
-import akka.{ NotUsed, Done }
+import akka.{ Done, NotUsed }
 import akka.event.LoggingAdapter
-import akka.japi.{ function, Pair }
+import akka.japi.{ Pair, function }
 import akka.stream.impl.{ ConstantFun, StreamLayout }
 import akka.stream._
 import akka.stream.stage.Stage
 import org.reactivestreams.Processor
+
 import scala.annotation.unchecked.uncheckedVariance
 import scala.concurrent.duration.FiniteDuration
 import akka.japi.Util
 import java.util.Comparator
 import java.util.concurrent.CompletionStage
+
 import scala.compat.java8.FutureConverters._
 
 object Flow {
@@ -332,8 +334,9 @@ final class Flow[-In, +Out, +Mat](delegate: scaladsl.Flow[In, Out, Mat]) extends
   /**
    * Transform this stream by applying the given function to each of the elements
    * as they pass through this processing step. The function returns a `CompletionStage` and the
-   * value of that future will be emitted downstream. As many futures as requested elements by
-   * downstream may run in parallel and may complete in any order, but the elements that
+   * value of that future will be emitted downstream. The number of CompletionStages
+   * that shall run in parallel is given as the first argument to ``mapAsync``.
+   * These CompletionStages may complete in any order, but the elements that
    * are emitted downstream are in the same order as received from upstream.
    *
    * If the function `f` throws an exception or if the `CompletionStage` is completed
@@ -363,10 +366,10 @@ final class Flow[-In, +Out, +Mat](delegate: scaladsl.Flow[In, Out, Mat]) extends
   /**
    * Transform this stream by applying the given function to each of the elements
    * as they pass through this processing step. The function returns a `CompletionStage` and the
-   * value of that future will be emitted downstream. As many futures as requested elements by
-   * downstream may run in parallel and each processed element will be emitted downstream
-   * as soon as it is ready, i.e. it is possible that the elements are not emitted downstream
-   * in the same order as received from upstream.
+   * value of that future will be emitted downstream. The number of CompletionStages
+   * that shall run in parallel is given as the first argument to ``mapAsyncUnordered``.
+   * Each processed element will be emitted downstream as soon as it is ready, i.e. it is possible
+   * that the elements are not emitted downstream in the same order as received from upstream.
    *
    * If the function `f` throws an exception or if the `CompletionStage` is completed
    * with failure and the supervision decision is [[akka.stream.Supervision#stop]]
@@ -547,6 +550,33 @@ final class Flow[-In, +Out, +Mat](delegate: scaladsl.Flow[In, Out, Mat]) extends
    */
   def scan[T](zero: T)(f: function.Function2[T, Out, T]): javadsl.Flow[In, T, Mat] =
     new Flow(delegate.scan(zero)(f.apply))
+
+  /**
+   * Similar to `scan` but with a asynchronous function,
+   * emits its current value which starts at `zero` and then
+   * applies the current and next value to the given function `f`,
+   * emitting a `Future` that resolves to the next current value.
+   *
+   * If the function `f` throws an exception and the supervision decision is
+   * [[akka.stream.Supervision.Restart]] current value starts at `zero` again
+   * the stream will continue.
+   *
+   * If the function `f` throws an exception and the supervision decision is
+   * [[akka.stream.Supervision.Resume]] current value starts at the previous
+   * current value, or zero when it doesn't have one, and the stream will continue.
+   *
+   * '''Emits when''' the future returned by f` completes
+   *
+   * '''Backpressures when''' downstream backpressures
+   *
+   * '''Completes when''' upstream completes and the last future returned by `f` completes
+   *
+   * '''Cancels when''' downstream cancels
+   *
+   * See also [[FlowOps.scan]]
+   */
+  def scanAsync[T](zero: T)(f: function.Function2[T, Out, CompletionStage[T]]): javadsl.Flow[In, T, Mat] =
+    new Flow(delegate.scanAsync(zero) { (out, in) ⇒ f(out, in).toScala })
 
   /**
    * Similar to `scan` but only emits its result when the upstream completes,
@@ -747,9 +777,9 @@ final class Flow[-In, +Out, +Mat](delegate: scaladsl.Flow[In, Out, Mat]) extends
 
   /**
    * Terminate processing (and cancel the upstream publisher) after predicate
-   * returns false for the first time. Due to input buffering some elements may have been
-   * requested from upstream publishers that will then not be processed downstream
-   * of this step.
+   * returns false for the first time, including the first failed element iff inclusive is true
+   * Due to input buffering some elements may have been requested from upstream publishers
+   * that will then not be processed downstream of this step.
    *
    * The stream will be completed without producing any elements if predicate is false for
    * the first stream element.
@@ -758,13 +788,34 @@ final class Flow[-In, +Out, +Mat](delegate: scaladsl.Flow[In, Out, Mat]) extends
    *
    * '''Backpressures when''' downstream backpressures
    *
-   * '''Completes when''' predicate returned false or upstream completes
+   * '''Completes when''' predicate returned false (or 1 after predicate returns false if `inclusive` or upstream completes
    *
    * '''Cancels when''' predicate returned false or downstream cancels
    *
    * See also [[Flow.limit]], [[Flow.limitWeighted]]
    */
-  def takeWhile(p: function.Predicate[Out]): javadsl.Flow[In, Out, Mat] = new Flow(delegate.takeWhile(p.test))
+  def takeWhile(p: function.Predicate[Out], inclusive: Boolean = false): javadsl.Flow[In, Out, Mat] = new Flow(delegate.takeWhile(p.test, inclusive))
+
+  /**
+   * Terminate processing (and cancel the upstream publisher) after predicate
+   * returns false for the first time, including the first failed element iff inclusive is true
+   * Due to input buffering some elements may have been requested from upstream publishers
+   * that will then not be processed downstream of this step.
+   *
+   * The stream will be completed without producing any elements if predicate is false for
+   * the first stream element.
+   *
+   * '''Emits when''' the predicate is true
+   *
+   * '''Backpressures when''' downstream backpressures
+   *
+   * '''Completes when''' predicate returned false (or 1 after predicate returns false if `inclusive` or upstream completes
+   *
+   * '''Cancels when''' predicate returned false or downstream cancels
+   *
+   * See also [[Flow.limit]], [[Flow.limitWeighted]]
+   */
+  def takeWhile(p: function.Predicate[Out]): javadsl.Flow[In, Out, Mat] = takeWhile(p, false)
 
   /**
    * Discard elements at the beginning of the stream while predicate is true.
@@ -1635,6 +1686,21 @@ final class Flow[-In, +Out, +Mat](delegate: scaladsl.Flow[In, Out, Mat]) extends
     new Flow(delegate.zipWithMat[Out2, Out3, M, M2](that)(combinerToScala(combine))(combinerToScala(matF)))
 
   /**
+   * Combine the elements of current flow into a stream of tuples consisting
+   * of all elements paired with their index. Indices start at 0.
+   *
+   * '''Emits when''' upstream emits an element and is paired with their index
+   *
+   * '''Backpressures when''' downstream backpressures
+   *
+   * '''Completes when''' upstream completes
+   *
+   * '''Cancels when''' downstream cancels
+   */
+  def zipWithIndex: Flow[In, Pair[Out @uncheckedVariance, Long], Mat] =
+    new Flow(delegate.zipWithIndex.map { case (elem, index) ⇒ Pair(elem, index) })
+
+  /**
    * If the first element has not passed through this stage before the provided timeout, the stream is failed
    * with a [[java.util.concurrent.TimeoutException]].
    *
@@ -1794,8 +1860,8 @@ final class Flow[-In, +Out, +Mat](delegate: scaladsl.Flow[In, Out, Mat]) extends
   def detach: javadsl.Flow[In, Out, Mat] = new Flow(delegate.detach)
 
   /**
-   * Materializes to `Future[Done]` that completes on getting termination message.
-   * The Future completes with success when received complete message from upstream or cancel
+   * Materializes to `CompletionStage<Done>` that completes on getting termination message.
+   * The future completes with success when received complete message from upstream or cancel
    * from downstream. It fails with the same error when received error message from
    * downstream.
    */

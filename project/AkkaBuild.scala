@@ -64,17 +64,9 @@ object AkkaBuild extends Build {
     contrib,
     distributedData,
     docs,
-    http,
-    httpCore,
-    httpJackson,
-    httpSprayJson,
-    httpTestkit,
-    httpTests,
-    httpXml,
     kernel,
     multiNodeTestkit,
     osgi,
-    parsing,
     persistence,
     persistenceQuery,
     persistenceShared,
@@ -103,7 +95,7 @@ object AkkaBuild extends Build {
     base = file("akka-scala-nightly"),
     // remove dependencies that we have to build ourselves (Scala STM)
     // samples don't work with dbuild right now
-    aggregate = aggregatedProjects diff List(agent, docs, samples)
+    aggregate = aggregatedProjects diff List[ProjectReference](agent, docs, samples)
   ).disablePlugins(ValidatePullRequest, MimaPlugin)
 
   lazy val actor = Project(
@@ -134,7 +126,7 @@ object AkkaBuild extends Build {
     base = file("akka-bench-jmh"),
     dependencies = Seq(
       actor,
-      http, stream, streamTests,
+      stream, streamTests,
       persistence, distributedData,
       testkit
     ).map(_ % "compile;compile->test;provided->provided")
@@ -148,7 +140,7 @@ object AkkaBuild extends Build {
   lazy val remote = Project(
     id = "akka-remote",
     base = file("akka-remote"),
-    dependencies = Seq(actor, actorTests % "test->test", testkit % "test->test", protobuf)
+    dependencies = Seq(actor, stream, actorTests % "test->test", testkit % "test->test", streamTestkit % "test", protobuf)
   )
 
   lazy val multiNodeTestkit = Project(
@@ -160,7 +152,7 @@ object AkkaBuild extends Build {
   lazy val remoteTests = Project(
     id = "akka-remote-tests",
     base = file("akka-remote-tests"),
-    dependencies = Seq(actorTests % "test->test", multiNodeTestkit)
+    dependencies = Seq(actorTests % "test->test", remote % "test->test", streamTestkit % "test", multiNodeTestkit)
   ).configs(MultiJvm)
 
   lazy val cluster = Project(
@@ -238,74 +230,6 @@ object AkkaBuild extends Build {
     dependencies = Seq(persistence % "test->test", testkit % "test->test", remote % "test", protobuf)
   )
 
-  lazy val httpCore = Project(
-    id = "akka-http-core",
-    base = file("akka-http-core"),
-    dependencies = Seq(stream, parsing, streamTestkit % "test->test")
-  )
-
-  lazy val http = Project(
-    id = "akka-http-experimental",
-    base = file("akka-http"),
-    dependencies = Seq(httpCore)
-  )
-
-  lazy val httpTestkit = Project(
-    id = "akka-http-testkit",
-    base = file("akka-http-testkit"),
-    dependencies = Seq(http, streamTestkit)
-  )
-
-  lazy val httpTests = Project(
-    id = "akka-http-tests",
-    base = file("akka-http-tests"),
-    dependencies = Seq(
-      httpTestkit % "test", streamTestkit % "test->test", testkit % "test->test", httpSprayJson, httpXml, httpJackson, 
-      multiNodeTestkit, remoteTests % "test->test") // required for multi-node latency/throughput Spec
-  ).configs(MultiJvm)
-
-  lazy val httpMarshallersScala = Project(
-    id = "akka-http-marshallers-scala-experimental",
-    base = file("akka-http-marshallers-scala")
-  )
-  .settings(parentSettings: _*)
-  .aggregate(httpSprayJson, httpXml)
-
-  lazy val httpXml =
-    httpMarshallersScalaSubproject("xml")
-
-  lazy val httpSprayJson =
-    httpMarshallersScalaSubproject("spray-json")
-
-  lazy val httpMarshallersJava = Project(
-    id = "akka-http-marshallers-java-experimental",
-    base = file("akka-http-marshallers-java")
-  )
-  .settings(parentSettings: _*)
-  .aggregate(httpJackson)
-
-  lazy val httpJackson =
-    httpMarshallersJavaSubproject("jackson")
-
-  def httpMarshallersScalaSubproject(name: String) =
-    Project(
-      id = s"akka-http-$name-experimental",
-      base = file(s"akka-http-marshallers-scala/akka-http-$name"),
-      dependencies = Seq(http)
-    )
-
-  def httpMarshallersJavaSubproject(name: String) =
-    Project(
-      id = s"akka-http-$name-experimental",
-      base = file(s"akka-http-marshallers-java/akka-http-$name"),
-      dependencies = Seq(http)
-    )
-
-  lazy val parsing = Project(
-    id = "akka-parsing",
-    base = file("akka-parsing")
-  )
-
   lazy val stream = Project(
     id = "akka-stream",
     base = file("akka-stream"),
@@ -357,9 +281,7 @@ object AkkaBuild extends Build {
       remote % "compile;test->test", cluster, clusterMetrics, slf4j, agent, camel, osgi,
       persistence % "compile;provided->provided;test->test", persistenceTck, persistenceQuery,
       typed % "compile;test->test", distributedData,
-      stream, streamTestkit % "compile;test->test",
-      http, httpSprayJson, httpJackson, httpXml,
-      httpTests % "compile;test->test", httpTestkit % "compile;test->test"
+      stream, streamTestkit % "compile;test->test"
     )
   )
 
@@ -519,6 +441,8 @@ object AkkaBuild extends Build {
     licenses := Seq(("Apache License, Version 2.0", url("http://www.apache.org/licenses/LICENSE-2.0"))),
     homepage := Some(url("http://akka.io/")),
 
+    apiURL := Some(url(s"http://doc.akka.io/api/akka/${version.value}")),
+
     initialCommands :=
       """|import language.postfixOps
          |import akka.actor._
@@ -528,7 +452,7 @@ object AkkaBuild extends Build {
          |import scala.concurrent.duration._
          |import akka.util.Timeout
          |var config = ConfigFactory.parseString("akka.stdout-loglevel=INFO,akka.loglevel=DEBUG,pinned{type=PinnedDispatcher,executor=thread-pool-executor,throughput=1000}")
-         |var remoteConfig = ConfigFactory.parseString("akka.remote.netty{port=0,use-dispatcher-for-io=akka.actor.default-dispatcher,execution-pool-size=0},akka.actor.provider=akka.remote.RemoteActorRefProvider").withFallback(config)
+         |var remoteConfig = ConfigFactory.parseString("akka.remote.netty{port=0,use-dispatcher-for-io=akka.actor.default-dispatcher,execution-pool-size=0},akka.actor.provider=remote").withFallback(config)
          |var system: ActorSystem = null
          |implicit def _system = system
          |def startSystem(remoting: Boolean = false) { system = ActorSystem("repl", if(remoting) remoteConfig else config); println("don’t forget to system.terminate()!") }

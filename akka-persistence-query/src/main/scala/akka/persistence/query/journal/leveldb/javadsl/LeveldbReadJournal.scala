@@ -4,8 +4,7 @@
 package akka.persistence.query.journal.leveldb.javadsl
 
 import akka.NotUsed
-
-import akka.persistence.query.EventEnvelope
+import akka.persistence.query.{ EventEnvelope, EventEnvelope2, Offset }
 import akka.persistence.query.javadsl._
 import akka.stream.javadsl.Source
 
@@ -32,7 +31,9 @@ class LeveldbReadJournal(scaladslReadJournal: akka.persistence.query.journal.lev
   with EventsByPersistenceIdQuery
   with CurrentEventsByPersistenceIdQuery
   with EventsByTagQuery
-  with CurrentEventsByTagQuery {
+  with EventsByTagQuery2
+  with CurrentEventsByTagQuery
+  with CurrentEventsByTagQuery2 {
 
   /**
    * `allPersistenceIds` is used for retrieving all `persistenceIds` of all
@@ -137,6 +138,9 @@ class LeveldbReadJournal(scaladslReadJournal: akka.persistence.query.journal.lev
    * The stream is completed with failure if there is a failure in executing the query in the
    * backend journal.
    */
+  override def eventsByTag(tag: String, offset: Offset): Source[EventEnvelope2, NotUsed] =
+    scaladslReadJournal.eventsByTag(tag, offset).asJava
+
   override def eventsByTag(tag: String, offset: Long): Source[EventEnvelope, NotUsed] =
     scaladslReadJournal.eventsByTag(tag, offset).asJava
 
@@ -145,6 +149,9 @@ class LeveldbReadJournal(scaladslReadJournal: akka.persistence.query.journal.lev
    * is completed immediately when it reaches the end of the "result set". Events that are
    * stored after the query is completed are not included in the event stream.
    */
+  override def currentEventsByTag(tag: String, offset: Offset): Source[EventEnvelope2, NotUsed] =
+    scaladslReadJournal.currentEventsByTag(tag, offset).asJava
+
   override def currentEventsByTag(tag: String, offset: Long): Source[EventEnvelope, NotUsed] =
     scaladslReadJournal.currentEventsByTag(tag, offset).asJava
 }

@@ -962,7 +962,60 @@ object MiMa extends AutoPlugin {
         ProblemFilters.exclude[ReversedMissingMethodProblem]("akka.http.scaladsl.model.ws.TextMessage.asScala"),
         ProblemFilters.exclude[ReversedMissingMethodProblem]("akka.http.scaladsl.model.ws.TextMessage.getStreamedText"),
         ProblemFilters.exclude[ReversedMissingMethodProblem]("akka.http.scaladsl.model.ws.BinaryMessage.asScala"),
-        ProblemFilters.exclude[ReversedMissingMethodProblem]("akka.http.scaladsl.model.ws.BinaryMessage.getStreamedData")
+        ProblemFilters.exclude[ReversedMissingMethodProblem]("akka.http.scaladsl.model.ws.BinaryMessage.getStreamedData"),
+
+        // #21131 new implementation for Akka Typed
+        ProblemFilters.exclude[ReversedMissingMethodProblem]("akka.actor.dungeon.DeathWatch.isWatching")
+      ),
+      "2.4.10" -> Seq(
+        // #21290 new zipWithIndex flow op
+        ProblemFilters.exclude[ReversedMissingMethodProblem]("akka.stream.scaladsl.FlowOps.zipWithIndex"),
+
+        // #21541 new ScanAsync flow op
+        ProblemFilters.exclude[ReversedMissingMethodProblem]("akka.stream.scaladsl.FlowOps.scanAsync"),
+
+        // Remove useUntrustedMode which is an internal API and not used anywhere anymore
+        ProblemFilters.exclude[DirectMissingMethodProblem]("akka.remote.Remoting.useUntrustedMode"),
+        ProblemFilters.exclude[DirectMissingMethodProblem]("akka.remote.RemoteTransport.useUntrustedMode"),
+
+        // Use OptionVal in remote Send envelope
+        FilterAnyProblemStartingWith("akka.remote.EndpointManager"),
+        FilterAnyProblemStartingWith("akka.remote.Remoting"),
+        FilterAnyProblemStartingWith("akka.remote.RemoteTransport"),
+        FilterAnyProblemStartingWith("akka.remote.InboundMessageDispatcher"),
+        FilterAnyProblemStartingWith("akka.remote.DefaultMessageDispatcher"),
+        FilterAnyProblemStartingWith("akka.remote.transport"),
+        ProblemFilters.exclude[DirectMissingMethodProblem]("akka.remote.RemoteActorRefProvider.quarantine"),
+        ProblemFilters.exclude[DirectMissingMethodProblem]("akka.remote.RemoteWatcher.quarantine"),
+
+        // #20644 long uids
+        ProblemFilters.exclude[ReversedMissingMethodProblem]("akka.cluster.protobuf.msg.ClusterMessages#UniqueAddressOrBuilder.hasUid2"),
+        ProblemFilters.exclude[ReversedMissingMethodProblem]("akka.cluster.protobuf.msg.ClusterMessages#UniqueAddressOrBuilder.getUid2"),
+        ProblemFilters.exclude[ReversedMissingMethodProblem]("akka.cluster.ddata.protobuf.msg.ReplicatorMessages#UniqueAddressOrBuilder.hasUid2"),
+        ProblemFilters.exclude[ReversedMissingMethodProblem]("akka.cluster.ddata.protobuf.msg.ReplicatorMessages#UniqueAddressOrBuilder.getUid2"),
+        ProblemFilters.exclude[IncompatibleMethTypeProblem]("akka.remote.RemoteWatcher.receiveHeartbeatRsp"),
+        ProblemFilters.exclude[IncompatibleResultTypeProblem]("akka.remote.RemoteWatcher.selfHeartbeatRspMsg"),
+
+        // #21330 takeWhile inclusive flag
+        ProblemFilters.exclude[ReversedMissingMethodProblem]("akka.stream.scaladsl.FlowOps.takeWhile")
+      ),
+      "2.4.11" -> Seq(
+        // #20795  IOResult construction exposed
+        ProblemFilters.exclude[MissingTypesProblem]("akka.stream.IOResult$"),
+
+        // #21727 moved all of Unfold.scala in package akka.stream.impl
+        ProblemFilters.exclude[MissingClassProblem]("akka.stream.scaladsl.UnfoldAsync"),
+        ProblemFilters.exclude[MissingClassProblem]("akka.stream.scaladsl.Unfold"),
+        
+        // #21194 renamed internal actor method 
+        ProblemFilters.exclude[DirectMissingMethodProblem]("akka.cluster.sharding.ShardCoordinator.allocateShardHomes"),
+        
+        // MarkerLoggingAdapter introduced (all internal classes)
+        ProblemFilters.exclude[IncompatibleResultTypeProblem]("akka.actor.LocalActorRefProvider.log"),
+        ProblemFilters.exclude[IncompatibleResultTypeProblem]("akka.actor.VirtualPathContainer.log"),
+        ProblemFilters.exclude[IncompatibleMethTypeProblem]("akka.actor.VirtualPathContainer.this"),
+        ProblemFilters.exclude[IncompatibleMethTypeProblem]("akka.remote.RemoteSystemDaemon.this")
+
       )
     )
   }

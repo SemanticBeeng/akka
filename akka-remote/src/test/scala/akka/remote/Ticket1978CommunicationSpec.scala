@@ -3,20 +3,21 @@
  */
 package akka.remote
 
-import akka.testkit._
+import java.security.NoSuchAlgorithmException
+
 import akka.actor._
-import com.typesafe.config._
-import scala.concurrent.Future
-import scala.reflect.classTag
+import akka.event.NoMarkerLogging
 import akka.pattern.ask
-import java.security.{ NoSuchAlgorithmException }
+import akka.remote.Configuration.{ CipherConfig, getCipherConfig }
+import akka.remote.transport.netty.{ NettySSLSupport, SSLSettings }
+import akka.testkit._
 import akka.util.Timeout
-import scala.concurrent.Await
-import scala.concurrent.duration._
-import akka.event.{ NoLogging }
-import akka.remote.transport.netty.{ SSLSettings, NettySSLSupport }
-import Configuration.{ CipherConfig, getCipherConfig }
+import com.typesafe.config._
 import org.uncommons.maths.random.RandomDotOrgSeedGenerator
+
+import scala.concurrent.{ Await, Future }
+import scala.concurrent.duration._
+import scala.reflect.classTag
 import scala.util.control.NonFatal
 
 object Configuration {
@@ -26,7 +27,7 @@ object Configuration {
   private val keyStore = getClass.getClassLoader.getResource("keystore").getPath
   private val conf = """
     akka {
-      actor.provider = "akka.remote.RemoteActorRefProvider"
+      actor.provider = remote
       test {
         single-expect-default = 10s
         filter-leeway = 10s
@@ -63,20 +64,19 @@ object Configuration {
       val fullConfig = config.withFallback(AkkaSpec.testConf).withFallback(ConfigFactory.load).getConfig("akka.remote.netty.ssl.security")
       val settings = new SSLSettings(fullConfig)
 
-      val rng = NettySSLSupport.initializeCustomSecureRandom(settings.SSLRandomNumberGenerator, NoLogging)
+      val rng = settings.createSecureRandom(NoMarkerLogging)
 
       rng.nextInt() // Has to work
-      settings.SSLRandomNumberGenerator foreach {
-        sRng ⇒ rng.getAlgorithm == sRng || (throw new NoSuchAlgorithmException(sRng))
-      }
+      val sRng = settings.SSLRandomNumberGenerator
+      rng.getAlgorithm == sRng || (throw new NoSuchAlgorithmException(sRng))
 
-      val engine = NettySSLSupport.initializeClientSSL(settings, NoLogging).getEngine
+      val engine = NettySSLSupport(settings, NoMarkerLogging, isClient = true).getEngine
       val gotAllSupported = enabled.toSet diff engine.getSupportedCipherSuites.toSet
       val gotAllEnabled = enabled.toSet diff engine.getEnabledCipherSuites.toSet
       gotAllSupported.isEmpty || (throw new IllegalArgumentException("Cipher Suite not supported: " + gotAllSupported))
       gotAllEnabled.isEmpty || (throw new IllegalArgumentException("Cipher Suite not enabled: " + gotAllEnabled))
-      engine.getSupportedProtocols.contains(settings.SSLProtocol.get) ||
-        (throw new IllegalArgumentException("Protocol not supported: " + settings.SSLProtocol.get))
+      engine.getSupportedProtocols.contains(settings.SSLProtocol) ||
+        (throw new IllegalArgumentException("Protocol not supported: " + settings.SSLProtocol))
 
       CipherConfig(true, config, cipher, localPort, remotePort)
     } catch {

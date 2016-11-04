@@ -166,7 +166,15 @@ object ActorSystem {
     import config._
 
     final val ConfigVersion: String = getString("akka.version")
-    final val ProviderClass: String = getString("akka.actor.provider")
+    final val ProviderClass: String =
+      getString("akka.actor.provider") match {
+        case "local"   ⇒ classOf[LocalActorRefProvider].getName
+        // these two cannot be referenced by class as they may not be on the classpath
+        case "remote"  ⇒ "akka.remote.RemoteActorRefProvider"
+        case "cluster" ⇒ "akka.cluster.ClusterActorRefProvider"
+        case fqcn      ⇒ fqcn
+      }
+
     final val SupervisorStrategyClass: String = getString("akka.actor.guardian-supervisor-strategy")
     final val CreationTimeout: Timeout = Timeout(config.getMillisDuration("akka.actor.creation-timeout"))
     final val UnstartedPushTimeout: Timeout = Timeout(config.getMillisDuration("akka.actor.unstarted-push-timeout"))
@@ -529,7 +537,7 @@ private[akka] class ActorSystemImpl(
           case _ ⇒
             if (settings.JvmExitOnFatalError) {
               try {
-                log.error(cause, "Uncaught error from thread [{}] shutting down JVM since 'akka.jvm-exit-on-fatal-error' is enabled", thread.getName)
+                markerLogging.error(LogMarker.Security, cause, "Uncaught error from thread [{}] shutting down JVM since 'akka.jvm-exit-on-fatal-error' is enabled", thread.getName)
                 import System.err
                 err.print("Uncaught error from thread [")
                 err.print(thread.getName)
@@ -542,7 +550,7 @@ private[akka] class ActorSystemImpl(
                 System.exit(-1)
               }
             } else {
-              log.error(cause, "Uncaught fatal error from thread [{}] shutting down ActorSystem [{}]", thread.getName, name)
+              markerLogging.error(LogMarker.Security, cause, "Uncaught fatal error from thread [{}] shutting down ActorSystem [{}]", thread.getName, name)
               terminate()
             }
         }
@@ -597,7 +605,8 @@ private[akka] class ActorSystemImpl(
     dynamicAccess.createInstanceFor[LoggingFilter](LoggingFilter, arguments).get
   }
 
-  val log: LoggingAdapter = new BusLogging(eventStream, getClass.getName + "(" + name + ")", this.getClass, logFilter)
+  private[this] val markerLogging = new MarkerLoggingAdapter(eventStream, getClass.getName + "(" + name + ")", this.getClass, logFilter)
+  val log: LoggingAdapter = markerLogging
 
   val scheduler: Scheduler = createScheduler()
 
@@ -831,6 +840,7 @@ private[akka] class ActorSystemImpl(
     /**
      * Adds a Runnable that will be executed on ActorSystem termination.
      * Note that callbacks are executed in reverse order of insertion.
+     *
      * @param r The callback to be executed on ActorSystem termination
      * Throws RejectedExecutionException if called after ActorSystem has been terminated.
      */

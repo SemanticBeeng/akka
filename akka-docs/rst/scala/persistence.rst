@@ -123,6 +123,8 @@ It contains instructions on how to run the ``PersistentActorExample``.
   Note that when using ``become`` from ``receiveRecover`` it will still only use the ``receiveRecover``
   behavior when replaying the events. When replay is completed it will use the new behavior.
 
+.. _persistence-id-scala:
+
 Identifiers
 -----------
 
@@ -131,7 +133,13 @@ The identifier must be defined with the ``persistenceId`` method.
 
 .. includecode:: code/docs/persistence/PersistenceDocSpec.scala#persistence-id-override
 
-.. _recovery:
+.. note::
+  ``persistenceId`` must be unique to a given entity in the journal (database table/keyspace).
+  When replaying messages persisted to the journal, you query messages with a ``persistenceId``.
+  So, if two different entities share the same ``persistenceId``, message-replaying
+  behavior is corrupted.
+
+.. _recovery-scala:
 
 Recovery
 --------
@@ -181,7 +189,7 @@ Internal stash
 --------------
 
 The persistent actor has a private :ref:`stash <stash-scala>` for internally caching incoming messages during 
-:ref:`recovery <recovery>` or the ``persist\persistAll`` method persisting events. You can still use/inherit from the 
+:ref:`recovery <recovery-scala>` or the ``persist\persistAll`` method persisting events. You can still use/inherit from the 
 ``Stash`` interface. The internal stash cooperates with the normal stash by hooking into ``unstashAll`` method and 
 making sure messages are unstashed properly to the internal stash to maintain ordering guarantees.
 
@@ -304,6 +312,13 @@ In this case no stashing is happening, yet events are still persisted and callba
 While it is possible to nest mixed ``persist`` and ``persistAsync`` with keeping their respective semantics
 it is not a recommended practice, as it may lead to overly complex nesting.
 
+.. warning::
+  While it is possible to nest ``persist`` calls within one another, 
+  it is *not* legal call ``persist`` from any other Thread than the Actors message processing Thread.
+  For example, it is not legal to call ``persist`` from Futures! Doing so will break the guarantees 
+  that the persist methods aim to provide. Always call ``persist`` and ``persistAsync`` from within 
+  the Actor's receive block (or methods synchronously invoked from there).
+
 .. _failures-scala:
 
 Failures
@@ -363,6 +378,12 @@ Deleting messages in event sourcing based applications is typically either not u
 :ref:`snapshotting <snapshots>`, i.e. after a snapshot has been successfully stored, a ``deleteMessages(toSequenceNr)``
 up until the sequence number of the data held by that snapshot can be issued to safely delete the previous events
 while still having access to the accumulated state during replays - by loading the snapshot.
+
+.. warning::
+  If you are using :ref:`persistence-query-scala`, query results may be missing deleted messages in a journal,
+  depending on how deletions are implemented in the journal plugin.
+  Unless you use a plugin which still shows deleted messages in persistence query results,
+  you have to design your application so that it is not affected by missing messages.
 
 The result of the ``deleteMessages`` request is signaled to the persistent actor with a ``DeleteMessagesSuccess``
 message if the delete was successful or a ``DeleteMessagesFailure`` message if it failed.
@@ -433,6 +454,37 @@ mechanism when ``persist()`` is used. Notice the early stop behaviour that occur
 .. includecode:: code/docs/persistence/PersistenceDocSpec.scala#safe-shutdown-example-bad
 .. includecode:: code/docs/persistence/PersistenceDocSpec.scala#safe-shutdown-example-good
 
+.. _replay-filter-scala:
+
+Replay Filter
+-------------
+There could be cases where event streams are corrupted and multiple writers (i.e. multiple persistent actor instances)
+journaled different messages with the same sequence number.
+In such a case, you can configure how you filter replayed messages from multiple writers, upon recovery.
+
+In your configuration, under the ``akka.persistence.journal.xxx.replay-filter`` section (where ``xxx`` is your journal plugin id),
+you can select the replay filter ``mode`` from one of the following values:
+
+* repair-by-discard-old
+* fail
+* warn
+* off
+
+For example, if you configure the replay filter for leveldb plugin, it looks like this::
+
+      # The replay filter can detect a corrupt event stream by inspecting
+      # sequence numbers and writerUuid when replaying events.
+      akka.persistence.journal.leveldb.replay-filter {
+        # What the filter should do when detecting invalid events.
+        # Supported values:
+        # `repair-by-discard-old` : discard events from old writers,
+        #                           warning is logged
+        # `fail` : fail the replay, error is logged
+        # `warn` : log warning but emit events untouched
+        # `off` : disable this feature completely
+        mode = repair-by-discard-old
+      }
+
 .. _persistent-views:
 
 Persistent Views
@@ -502,7 +554,7 @@ Recovery
 
 Initial recovery of persistent views works the very same way as for persistent actors (i.e. by sending a ``Recover`` message
 to self). The maximum number of replayed messages during initial recovery is determined by ``autoUpdateReplayMax``.
-Further possibilities to customize initial recovery are explained in section :ref:`recovery`.
+Further possibilities to customize initial recovery are explained in section :ref:`recovery-scala`.
 
 .. _persistence-identifiers:
 
