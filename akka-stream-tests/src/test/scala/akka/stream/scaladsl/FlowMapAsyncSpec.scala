@@ -7,6 +7,7 @@ import scala.concurrent.Await
 import scala.concurrent.Future
 import scala.concurrent.duration._
 import java.util.concurrent.ThreadLocalRandom
+
 import scala.util.control.NoStackTrace
 import akka.stream.ActorMaterializer
 import akka.stream.testkit._
@@ -16,10 +17,13 @@ import akka.testkit.TestProbe
 import akka.stream.ActorAttributes.supervisionStrategy
 import akka.stream.Supervision.resumingDecider
 import akka.stream.impl.ReactiveStreamsCompliance
+
 import scala.annotation.tailrec
 import scala.concurrent.Promise
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.LinkedBlockingQueue
+
+import org.scalatest.concurrent.PatienceConfiguration.Timeout
 
 class FlowMapAsyncSpec extends StreamSpec {
 
@@ -44,10 +48,12 @@ class FlowMapAsyncSpec extends StreamSpec {
     "produce future elements in order" in {
       val c = TestSubscriber.manualProbe[Int]()
       implicit val ec = system.dispatcher
-      val p = Source(1 to 50).mapAsync(4)(n ⇒ Future {
-        Thread.sleep(ThreadLocalRandom.current().nextInt(1, 10))
-        n
-      }).to(Sink.fromSubscriber(c)).run()
+      val p = Source(1 to 50).mapAsync(4)(n ⇒
+        if (n % 3 == 0) Future.successful(n)
+        else Future {
+          Thread.sleep(ThreadLocalRandom.current().nextInt(1, 10))
+          n
+        }).to(Sink.fromSubscriber(c)).run()
       val sub = c.expectSubscription()
       sub.request(1000)
       for (n ← 1 to 50) c.expectNext(n)
@@ -92,6 +98,27 @@ class FlowMapAsyncSpec extends StreamSpec {
       val sub = c.expectSubscription()
       sub.request(10)
       c.expectError().getMessage should be("err1")
+      latch.countDown()
+    }
+
+    "signal future failure asap" in assertAllStagesStopped {
+      val latch = TestLatch(1)
+      val done = Source(1 to 5)
+        .map { n ⇒
+          if (n == 1) n
+          else {
+            // slow upstream should not block the error
+            Await.ready(latch, 10.seconds)
+            n
+          }
+        }
+        .mapAsync(4) { n ⇒
+          if (n == 1) Future.failed(new RuntimeException("err1") with NoStackTrace)
+          else Future.successful(n)
+        }.runWith(Sink.ignore)
+      intercept[RuntimeException] {
+        Await.result(done, remainingOrDefault)
+      }.getMessage should be("err1")
       latch.countDown()
     }
 
@@ -245,7 +272,7 @@ class FlowMapAsyncSpec extends StreamSpec {
         Source(1 to N)
           .mapAsync(parallelism)(i ⇒ deferred())
           .runFold(0)((c, _) ⇒ c + 1)
-          .futureValue(PatienceConfig(3.seconds)) should ===(N)
+          .futureValue(Timeout(3.seconds)) should ===(N)
       } finally {
         timer.interrupt()
       }

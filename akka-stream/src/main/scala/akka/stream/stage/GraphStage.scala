@@ -343,8 +343,8 @@ abstract class GraphStageLogic private[stream] (val inCount: Int, val outCount: 
    */
   final protected def pull[T](in: Inlet[T]): Unit = {
     val connection = conn(in)
-    val portState = connection.portState
     val it = interpreter
+    val portState = connection.portState
 
     if ((portState & (InReady | InClosed | OutClosed)) == InReady) {
       connection.portState = portState ^ PullStartFlip
@@ -441,8 +441,8 @@ abstract class GraphStageLogic private[stream] (val inCount: Int, val outCount: 
    */
   final protected def push[T](out: Outlet[T], elem: T): Unit = {
     val connection = conn(out)
-    val portState = connection.portState
     val it = interpreter
+    val portState = connection.portState
 
     connection.portState = portState ^ PushStartFlip
 
@@ -455,8 +455,8 @@ abstract class GraphStageLogic private[stream] (val inCount: Int, val outCount: 
 
       // Detailed error information should not add overhead to the hot path
       ReactiveStreamsCompliance.requireNonNullElement(elem)
-      require(isAvailable(out), s"Cannot push port ($out) twice")
       require(!isClosed(out), s"Cannot pull closed port ($out)")
+      require(isAvailable(out), s"Cannot push port ($out) twice")
 
       // No error, just InClosed caused the actual pull to be ignored, but the status flag still needs to be flipped
       connection.portState = portState ^ PushStartFlip
@@ -909,7 +909,7 @@ abstract class GraphStageLogic private[stream] (val inCount: Int, val outCount: 
    * The messages are looped through the [[getAsyncCallback]] mechanism of [[GraphStage]] so they are safe to modify
    * internal state of this stage.
    *
-   * This method must not (the earliest) be called after the [[GraphStageLogic]] constructor has finished running,
+   * This method must (the earliest) be called after the [[GraphStageLogic]] constructor has finished running,
    * for example from the [[preStart]] callback the graph stage logic provides.
    *
    * Created [[StageActorRef]] to get messages and watch other actors in synchronous way.
