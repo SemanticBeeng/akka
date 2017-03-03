@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.actor.dungeon
@@ -11,6 +11,7 @@ import akka.actor._
 import akka.serialization.SerializationExtension
 import akka.util.{ Unsafe, Helpers }
 import akka.serialization.SerializerWithStringManifest
+import java.util.Optional
 
 private[akka] object Children {
   val GetNobody = () ⇒ Nobody
@@ -35,6 +36,7 @@ private[akka] trait Children { this: ActorCell ⇒
     case Some(s: ChildRestartStats) ⇒ s.child
     case _                          ⇒ null
   }
+  def findChild(name: String): Optional[ActorRef] = Optional.ofNullable(getChild(name))
 
   def actorOf(props: Props): ActorRef =
     makeChild(this, props, randomName(), async = false, systemService = false)
@@ -57,8 +59,10 @@ private[akka] trait Children { this: ActorCell ⇒
         other
     }
 
-  private[akka] def addFunctionRef(f: (ActorRef, Any) ⇒ Unit): FunctionRef = {
-    val childPath = new ChildActorPath(self.path, randomName(new java.lang.StringBuilder("$$")), ActorCell.newUid())
+  private[akka] def addFunctionRef(f: (ActorRef, Any) ⇒ Unit, name: String = ""): FunctionRef = {
+    val r = randomName(new java.lang.StringBuilder("$$"))
+    val n = if (name != "") s"$r-$name" else r
+    val childPath = new ChildActorPath(self.path, n, ActorCell.newUid())
     val ref = new FunctionRef(childPath, provider, system.eventStream, f)
 
     @tailrec def rec(): Unit = {
@@ -229,8 +233,8 @@ private[akka] trait Children { this: ActorCell ⇒
 
   private def checkName(name: String): String = {
     name match {
-      case null ⇒ throw new InvalidActorNameException("actor name must not be null")
-      case ""   ⇒ throw new InvalidActorNameException("actor name must not be empty")
+      case null ⇒ throw InvalidActorNameException("actor name must not be null")
+      case ""   ⇒ throw InvalidActorNameException("actor name must not be empty")
       case _ ⇒
         ActorPath.validatePathElement(name)
         name

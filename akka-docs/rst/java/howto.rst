@@ -66,7 +66,7 @@ Such an actor is unlikely to be reused in a different actor hierarchy and contai
 
 This pattern provides a way to encapsulate supervision and error propagation to the temporary actor.
 Finally the promise returned by Patterns.ask() is fulfilled as a failure, including the exception
-(see also :ref:`actor-java-lambda` for Java compatibility).
+(see also :ref:`scala-java-compat` for Java compatibility).
 
 Let's have a look at the example code:
 
@@ -85,19 +85,3 @@ Finally we are able to execute an actor and receive the results or exceptions.
 
 .. includecode:: code/docs/pattern/SupervisedAskSpec.java
 
-Template Pattern
-================
-
-*Contributed by: N. N.*
-
-This is an especially nice pattern, since it does even come with some empty example code:
-
-.. includecode:: code/docs/pattern/JavaTemplate.java
-   :include: all-of-it
-   :exclude: uninteresting-stuff
-
-.. note::
-
-   Spread the word: this is the easiest way to get famous!
-
-Please keep this pattern at the end of this file.

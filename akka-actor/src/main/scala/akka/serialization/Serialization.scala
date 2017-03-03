@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.serialization
@@ -42,9 +42,12 @@ object Serialization {
       val defaultBindings = config.getConfig("akka.actor.serialization-bindings")
       val bindings =
         if (config.getBoolean("akka.actor.enable-additional-serialization-bindings") ||
-          config.hasPath("akka.remote.artery.enabled") && config.getBoolean("akka.remote.artery.enabled"))
+          !config.getBoolean("akka.actor.allow-java-serialization") ||
+          config.hasPath("akka.remote.artery.enabled") && config.getBoolean("akka.remote.artery.enabled")) {
           defaultBindings.withFallback(config.getConfig("akka.actor.additional-serialization-bindings"))
-        else defaultBindings
+        } else {
+          defaultBindings
+        }
       configToMap(bindings)
     }
 
@@ -97,6 +100,8 @@ class Serialization(val system: ExtendedActorSystem) extends Extension {
   import Serialization._
 
   val settings = new Settings(system.settings.config)
+  val AllowJavaSerialization: Boolean = system.settings.AllowJavaSerialization
+
   private[this] val _log = Logging.withMarker(system, getClass.getName)
   val log: LoggingAdapter = _log
   private val manifestCache = new AtomicReference[Map[String, Option[Class[_]]]](Map.empty[String, Option[Class[_]]])
@@ -222,14 +227,19 @@ class Serialization(val system: ExtendedActorSystem) extends Extension {
             (possibilities forall (_._1 isAssignableFrom possibilities(0)._1)) ||
             (possibilities forall (_._2 == possibilities(0)._2))
 
-        val ser = bindings filter { _._1 isAssignableFrom clazz } match {
-          case Seq() ⇒
-            throw new NotSerializableException("No configured serialization-bindings for class [%s]" format clazz.getName)
-          case possibilities ⇒
-            if (!unique(possibilities))
-              _log.warning(LogMarker.Security, "Multiple serializers found for " + clazz + ", choosing first: " + possibilities)
-            possibilities(0)._2
+        val ser = {
+          bindings.filter {
+            case (c, _) ⇒ c isAssignableFrom clazz
+          } match {
+            case immutable.Seq() ⇒
+              throw new NotSerializableException("No configured serialization-bindings for class [%s]" format clazz.getName)
+            case possibilities ⇒
+              if (!unique(possibilities))
+                _log.warning(LogMarker.Security, "Multiple serializers found for " + clazz + ", choosing first: " + possibilities)
+              possibilities(0)._2
+          }
         }
+
         serializerMap.putIfAbsent(clazz, ser) match {
           case null ⇒
             if (shouldWarnAboutJavaSerializer(clazz, ser)) {
@@ -237,7 +247,7 @@ class Serialization(val system: ExtendedActorSystem) extends Extension {
                 "performance implications. Use another serializer or disable this warning using the setting " +
                 "'akka.actor.warn-about-java-serializer-usage'", clazz.getName)
             }
-            log.debug("Using serializer[{}] for message [{}]", ser.getClass.getName, clazz.getName)
+            log.debug("Using serializer [{}] for message [{}]", ser.getClass.getName, clazz.getName)
             ser
           case some ⇒ some
         }
@@ -248,25 +258,71 @@ class Serialization(val system: ExtendedActorSystem) extends Extension {
    * Tries to load the specified Serializer by the fully-qualified name; the actual
    * loading is performed by the system’s [[akka.actor.DynamicAccess]].
    */
-  def serializerOf(serializerFQN: String): Try[Serializer] =
-    system.dynamicAccess.createInstanceFor[Serializer](serializerFQN, List(classOf[ExtendedActorSystem] → system)) recoverWith {
-      case _: NoSuchMethodException ⇒ system.dynamicAccess.createInstanceFor[Serializer](serializerFQN, Nil)
+  def serializerOf(serializerFQN: String): Try[Serializer] = {
+    // We override each instantiation of the JavaSerializer with the "disabled" serializer which will log warnings if used.
+    val fqn =
+      if (!system.settings.AllowJavaSerialization && serializerFQN == classOf[JavaSerializer].getName) {
+        log.debug("Replacing JavaSerializer with DisabledJavaSerializer, " +
+          "due to `akka.actor.allow-java-serialization = off`.")
+        classOf[DisabledJavaSerializer].getName
+      } else serializerFQN
+
+    system.dynamicAccess.createInstanceFor[Serializer](fqn, List(classOf[ExtendedActorSystem] → system)) recoverWith {
+      case _: NoSuchMethodException ⇒
+        system.dynamicAccess.createInstanceFor[Serializer](fqn, Nil)
+    }
+  }
+
+  /**
+   * Programmatically defined serializers
+   */
+  private val serializerDetails: immutable.Seq[SerializerDetails] =
+    (system.settings.setup.get[SerializationSetup] match {
+      case None          ⇒ Vector.empty
+      case Some(setting) ⇒ setting.createSerializers(system)
+    }) collect {
+      case det: SerializerDetails if isDisallowedJavaSerializer(det.serializer) ⇒
+        log.debug("Replacing JavaSerializer with DisabledJavaSerializer, " +
+          "due to `akka.actor.allow-java-serialization = off`.")
+        SerializerDetails(det.alias, new DisabledJavaSerializer(system), det.useFor)
+      case det ⇒ det
     }
 
   /**
    * A Map of serializer from alias to implementation (class implementing akka.serialization.Serializer)
    * By default always contains the following mapping: "java" -> akka.serialization.JavaSerializer
    */
-  private val serializers: Map[String, Serializer] =
-    for ((k: String, v: String) ← settings.Serializers) yield k → serializerOf(v).get
+  private val serializers: Map[String, Serializer] = {
+    val fromConfig = for ((k: String, v: String) ← settings.Serializers) yield k → serializerOf(v).get
+    val result = fromConfig ++ serializerDetails.map(d ⇒ d.alias → d.serializer)
+    ensureOnlyAllowedSerializers(result.map { case (_, ser) ⇒ ser }(collection.breakOut))
+    result
+  }
 
   /**
    *  bindings is a Seq of tuple representing the mapping from Class to Serializer.
    *  It is primarily ordered by the most specific classes first, and secondly in the configured order.
    */
-  private[akka] val bindings: immutable.Seq[ClassSerializer] =
-    sort(for ((k: String, v: String) ← settings.SerializationBindings if v != "none" && checkGoogleProtobuf(k))
-      yield (system.dynamicAccess.getClassFor[Any](k).get, serializers(v))).to[immutable.Seq]
+  private[akka] val bindings: immutable.Seq[ClassSerializer] = {
+    val fromConfig = for {
+      (className: String, alias: String) ← settings.SerializationBindings
+      if alias != "none" && checkGoogleProtobuf(className)
+    } yield (system.dynamicAccess.getClassFor[Any](className).get, serializers(alias))
+
+    val fromSettings = serializerDetails.flatMap { detail ⇒
+      detail.useFor.map(clazz ⇒ clazz → detail.serializer)
+    }
+
+    val result = sort(fromConfig ++ fromSettings)
+    ensureOnlyAllowedSerializers(result.map { case (_, ser) ⇒ ser }(collection.breakOut))
+    result
+  }
+
+  private def ensureOnlyAllowedSerializers(iter: Iterator[Serializer]): Unit = {
+    if (!system.settings.AllowJavaSerialization) {
+      require(iter.forall(!isDisallowedJavaSerializer(_)), "Disallowed JavaSerializer binding.")
+    }
+  }
 
   // com.google.protobuf serialization binding is only used if the class can be loaded,
   // i.e. com.google.protobuf dependency has been added in the application project.
@@ -329,6 +385,10 @@ class Serialization(val system: ExtendedActorSystem) extends Extension {
   private val isJavaSerializationWarningEnabled = settings.config.getBoolean("akka.actor.warn-about-java-serializer-usage")
   private val isWarningOnNoVerificationEnabled = settings.config.getBoolean("akka.actor.warn-on-no-serialization-verification")
 
+  private def isDisallowedJavaSerializer(serializer: Serializer): Boolean = {
+    serializer.isInstanceOf[JavaSerializer] && !system.settings.AllowJavaSerialization
+  }
+
   private def shouldWarnAboutJavaSerializer(serializedClass: Class[_], serializer: Serializer) = {
 
     def suppressWarningOnNonSerializationVerification(serializedClass: Class[_]) = {
@@ -337,7 +397,7 @@ class Serialization(val system: ExtendedActorSystem) extends Extension {
     }
 
     isJavaSerializationWarningEnabled &&
-      serializer.isInstanceOf[JavaSerializer] &&
+      (serializer.isInstanceOf[JavaSerializer] || serializer.isInstanceOf[DisabledJavaSerializer]) &&
       !serializedClass.getName.startsWith("akka.") &&
       !serializedClass.getName.startsWith("java.lang.") &&
       !suppressWarningOnNonSerializationVerification(serializedClass)

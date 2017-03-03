@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package docs.persistence;
@@ -88,9 +88,9 @@ public class PersistenceQueryDocTest {
   //#my-read-journal
   public class MyJavadslReadJournal implements 
   akka.persistence.query.javadsl.ReadJournal,
-  akka.persistence.query.javadsl.EventsByTagQuery2,
+  akka.persistence.query.javadsl.EventsByTagQuery,
   akka.persistence.query.javadsl.EventsByPersistenceIdQuery,
-  akka.persistence.query.javadsl.AllPersistenceIdsQuery,
+  akka.persistence.query.javadsl.PersistenceIdsQuery,
   akka.persistence.query.javadsl.CurrentPersistenceIdsQuery {
 
     private final FiniteDuration refreshInterval;
@@ -101,14 +101,26 @@ public class PersistenceQueryDocTest {
               TimeUnit.MILLISECONDS), TimeUnit.MILLISECONDS);
     }
 
+    /**
+     * You can use `NoOffset` to retrieve all events with a given tag or retrieve a subset of all
+     * events by specifying a `Sequence` `offset`. The `offset` corresponds to an ordered sequence number for
+     * the specific tag. Note that the corresponding offset of each event is provided in the
+     * [[akka.persistence.query.EventEnvelope]], which makes it possible to resume the
+     * stream at a later point from a given offset.
+     *
+     * The `offset` is exclusive, i.e. the event with the exact same sequence number will not be included
+     * in the returned stream. This means that you can use the offset that is returned in `EventEnvelope`
+     * as the `offset` parameter in a subsequent query.
+     */
     @Override
-    public Source<EventEnvelope2, NotUsed> eventsByTag(String tag, Offset offset) {
+    public Source<EventEnvelope, NotUsed> eventsByTag(String tag, Offset offset) {
       if(offset instanceof Sequence){
         Sequence sequenceOffset = (Sequence) offset;
         final Props props = MyEventsByTagPublisher.props(tag, sequenceOffset.value(), refreshInterval);
-        return Source.<EventEnvelope2>actorPublisher(props).
+        return Source.<EventEnvelope>actorPublisher(props).
           mapMaterializedValue(m -> NotUsed.getInstance());
-      }
+      } else if (offset == NoOffset.getInstance())
+        return eventsByTag(tag, Offset.sequence(0L)); //recursive
       else
         throw new IllegalArgumentException("MyJavadslReadJournal does not support " + offset.getClass().getName() + " offsets");
     }
@@ -121,7 +133,7 @@ public class PersistenceQueryDocTest {
     }
 
     @Override
-    public Source<String, NotUsed> allPersistenceIds() {
+    public Source<String, NotUsed> persistenceIds() {
       // implement in a similar way as eventsByTag
       throw new UnsupportedOperationException("Not implemented yet");
     }
@@ -148,9 +160,9 @@ public class PersistenceQueryDocTest {
   //#my-read-journal
   public class MyScaladslReadJournal implements 
   akka.persistence.query.scaladsl.ReadJournal,
-  akka.persistence.query.scaladsl.EventsByTagQuery2,
+  akka.persistence.query.scaladsl.EventsByTagQuery,
   akka.persistence.query.scaladsl.EventsByPersistenceIdQuery,
-  akka.persistence.query.scaladsl.AllPersistenceIdsQuery,
+  akka.persistence.query.scaladsl.PersistenceIdsQuery,
   akka.persistence.query.scaladsl.CurrentPersistenceIdsQuery {
     
     private final MyJavadslReadJournal javadslReadJournal;
@@ -160,7 +172,7 @@ public class PersistenceQueryDocTest {
     }
 
     @Override
-    public akka.stream.scaladsl.Source<EventEnvelope2, NotUsed> eventsByTag(
+    public akka.stream.scaladsl.Source<EventEnvelope, NotUsed> eventsByTag(
         String tag, akka.persistence.query.Offset offset) {
       return javadslReadJournal.eventsByTag(tag, offset).asScala();
     }
@@ -173,8 +185,8 @@ public class PersistenceQueryDocTest {
     }
 
     @Override
-    public akka.stream.scaladsl.Source<String, NotUsed> allPersistenceIds() {
-      return javadslReadJournal.allPersistenceIds().asScala();
+    public akka.stream.scaladsl.Source<String, NotUsed> persistenceIds() {
+      return javadslReadJournal.persistenceIds().asScala();
     }
     
     @Override
@@ -218,7 +230,7 @@ public class PersistenceQueryDocTest {
             "akka.persistence.query.my-read-journal");
 
     //#all-persistence-ids-live
-    readJournal.allPersistenceIds();
+    readJournal.persistenceIds();
     //#all-persistence-ids-live
   }
 
@@ -256,7 +268,7 @@ public class PersistenceQueryDocTest {
 
     //#events-by-tag
     // assuming journal is able to work with numeric offsets we can:
-    final Source<EventEnvelope2, NotUsed> blueThings =
+    final Source<EventEnvelope, NotUsed> blueThings =
       readJournal.eventsByTag("blue", new Sequence(0L));
 
     // find top 10 blue things:
@@ -270,7 +282,7 @@ public class PersistenceQueryDocTest {
         }, mat);
 
     // start another query, from the known offset
-    Source<EventEnvelope2, NotUsed> blue = readJournal.eventsByTag("blue", new Sequence(10));
+    Source<EventEnvelope, NotUsed> blue = readJournal.eventsByTag("blue", new Sequence(10));
     //#events-by-tag
   }
 
@@ -439,15 +451,20 @@ public class PersistenceQueryDocTest {
 
     public TheOneWhoWritesToQueryJournal() {
       store = new ExampleStore();
-
-      receive(ReceiveBuilder.matchAny(message -> {
-        state = updateState(state, message);
-
-        // example saving logic that requires state to become ready:
-        if (state.readyToSave())
-          store.save(Record.of(state));
-        
-      }).build());
+    }
+    
+    @Override
+    public Receive createReceive() {
+      return receiveBuilder()
+        .matchAny(message -> {
+          state = updateState(state, message);
+  
+          // example saving logic that requires state to become ready:
+          if (state.readyToSave())
+            store.save(Record.of(state));
+          
+        })
+        .build();
     }
 
 

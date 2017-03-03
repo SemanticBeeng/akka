@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2016 Lightbend Inc. <http://www.lightbend.com/>
+ * Copyright (C) 2016-2017 Lightbend Inc. <http://www.lightbend.com/>
  */
 package akka.typed
 package internal
@@ -120,7 +120,7 @@ private[typed] class EventStreamImpl(private val debug: Boolean)(implicit privat
    */
   private[typed] class StandardOutLogger extends ActorRef[LogEvent](StandardOutLoggerPath) with ActorRefImpl[LogEvent] with StdOutLogger {
     override def tell(message: LogEvent): Unit =
-      if (message == null) throw new a.InvalidMessageException("Message must not be null")
+      if (message == null) throw a.InvalidMessageException("Message must not be null")
       else print(message)
 
     def isLocal: Boolean = true
@@ -190,9 +190,11 @@ private[typed] class EventStreamImpl(private val debug: Boolean)(implicit privat
       }
     } catch {
       case e: Exception ⇒
-        System.err.println("error while starting up loggers")
-        e.printStackTrace()
-        throw new akka.ConfigurationException("Could not start logger due to [" + e.toString + "]")
+        if (!system.whenTerminated.isCompleted) {
+          System.err.println("error while starting up loggers")
+          e.printStackTrace()
+          throw new akka.ConfigurationException("Could not start logger due to [" + e.toString + "]")
+        }
     }
   }
 

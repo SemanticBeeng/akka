@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package docs.pattern;
@@ -25,12 +25,12 @@ public class SchedulerPatternTest extends AbstractJavaTest {
 
   static
   //#schedule-constructor
-  public class ScheduleInConstructor extends UntypedActor {
+  public class ScheduleInConstructor extends AbstractActor {
 
     private final Cancellable tick = getContext().system().scheduler().schedule(
       Duration.create(500, TimeUnit.MILLISECONDS),
       Duration.create(1, TimeUnit.SECONDS),
-      getSelf(), "tick", getContext().dispatcher(), null);
+      self(), "tick", getContext().dispatcher(), null);
     //#schedule-constructor
     // this variable and constructor is declared here to not show up in the docs
     final ActorRef target;
@@ -45,28 +45,25 @@ public class SchedulerPatternTest extends AbstractJavaTest {
     }
 
     @Override
-    public void onReceive(Object message) throws Exception {
-      if (message.equals("tick")) {
-        // do something useful here
-        //#schedule-constructor
-        target.tell(message, getSelf());
-        //#schedule-constructor
-      }
-      //#schedule-constructor
-      else if (message.equals("restart")) {
-        throw new ArithmeticException();
-      }
-      //#schedule-constructor
-      else {
-        unhandled(message);
-      }
+    public Receive createReceive() {
+      return receiveBuilder()
+        .matchEquals("tick", message -> {
+          // do something useful here
+          //#schedule-constructor
+          target.tell(message, self());
+          //#schedule-constructor
+        })
+        .matchEquals("restart", message -> {
+          throw new ArithmeticException();
+        })
+        .build();
     }
   }
   //#schedule-constructor
 
   static
   //#schedule-receive
-  public class ScheduleInReceive extends UntypedActor {
+  public class ScheduleInReceive extends AbstractActor {
     //#schedule-receive
     // this variable and constructor is declared here to not show up in the docs
     final ActorRef target;
@@ -79,7 +76,7 @@ public class SchedulerPatternTest extends AbstractJavaTest {
     public void preStart() {
       getContext().system().scheduler().scheduleOnce(
         Duration.create(500, TimeUnit.MILLISECONDS),
-        getSelf(), "tick", getContext().dispatcher(), null);
+        self(), "tick", getContext().dispatcher(), null);
     }
 
     // override postRestart so we don't call preStart and schedule a new message
@@ -88,25 +85,22 @@ public class SchedulerPatternTest extends AbstractJavaTest {
     }
 
     @Override
-    public void onReceive(Object message) throws Exception {
-      if (message.equals("tick")) {
-        // send another periodic tick after the specified delay
-        getContext().system().scheduler().scheduleOnce(
-          Duration.create(1, TimeUnit.SECONDS),
-          getSelf(), "tick", getContext().dispatcher(), null);
-        // do something useful here
-        //#schedule-receive
-        target.tell(message, getSelf());
-        //#schedule-receive
-      }
-      //#schedule-receive
-      else if (message.equals("restart")) {
-        throw new ArithmeticException();
-      }
-      //#schedule-receive
-      else {
-        unhandled(message);
-      }
+    public Receive createReceive() {
+      return receiveBuilder()
+        .matchEquals("tick", message -> {
+          // send another periodic tick after the specified delay
+          getContext().system().scheduler().scheduleOnce(
+            Duration.create(1, TimeUnit.SECONDS),
+            self(), "tick", getContext().dispatcher(), null);
+          // do something useful here
+          //#schedule-receive
+          target.tell(message, self());
+          //#schedule-receive
+        })
+        .matchEquals("restart", message -> {
+          throw new ArithmeticException();
+        })
+        .build();
     }
   }
   //#schedule-receive

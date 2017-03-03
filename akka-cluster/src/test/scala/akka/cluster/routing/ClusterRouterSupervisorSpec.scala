@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.cluster.routing
 
@@ -24,6 +24,7 @@ object ClusterRouterSupervisorSpec {
 class ClusterRouterSupervisorSpec extends AkkaSpec("""
   akka.actor.provider = "cluster"
   akka.remote.netty.tcp.port = 0
+  akka.remote.artery.canonical.port = 0
 """) {
 
   import ClusterRouterSupervisorSpec._

@@ -1,15 +1,20 @@
 package akka.serialization
 
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 
-import java.io.{ ObjectOutputStream, ByteArrayOutputStream, ByteArrayInputStream }
+import java.io.{ ByteArrayInputStream, ByteArrayOutputStream, ObjectOutputStream }
 import java.nio.ByteBuffer
 import java.util.concurrent.Callable
+
 import akka.util.ClassLoaderObjectInputStream
 import akka.actor.ExtendedActorSystem
+import akka.annotation.InternalApi
+import akka.event.{ LogMarker, Logging }
+
 import scala.util.DynamicVariable
+import scala.util.control.NoStackTrace
 
 /**
  * A Serializer represents a bimap between an object and an array of bytes representing that object.
@@ -120,6 +125,15 @@ abstract class SerializerWithStringManifest extends Serializer {
   /**
    * Produces an object from an array of bytes, with an optional type-hint;
    * the class should be loaded using ActorSystem.dynamicAccess.
+   *
+   * It's recommended to throw `java.io.NotSerializableException` in `fromBinary`
+   * if the manifest is unknown. This makes it possible to introduce new message
+   * types and send them to nodes that don't know about them. This is typically
+   * needed when performing rolling upgrades, i.e. running a cluster with mixed
+   * versions for while. `NotSerializableException` is treated as a transient
+   * problem in the TCP based remoting layer. The problem will be logged
+   * and message is dropped. Other exceptions will tear down the TCP connection
+   * because it can be an indication of corrupt bytes from the underlying transport.
    */
   def fromBinary(bytes: Array[Byte], manifest: String): AnyRef
 
@@ -203,7 +217,7 @@ trait BaseSerializer extends Serializer {
    * where `FQCN` is fully qualified class name of the serializer implementation
    * and `ID` is globally unique serializer identifier number.
    */
-  final val SerializationIdentifiers = "akka.actor.serialization-identifiers"
+  final val SerializationIdentifiers = BaseSerializer.SerializationIdentifiers
 
   /**
    * Globally unique serialization identifier configured in the `reference.conf`.
@@ -215,8 +229,25 @@ trait BaseSerializer extends Serializer {
   /**
    * INTERNAL API
    */
+  @InternalApi
   private[akka] def identifierFromConfig: Int =
-    system.settings.config.getInt(s"""${SerializationIdentifiers}."${getClass.getName}"""")
+    BaseSerializer.identifierFromConfig(getClass, system)
+}
+object BaseSerializer {
+  /**
+   * Configuration namespace of serialization identifiers in the `reference.conf`.
+   *
+   * Each serializer implementation must have an entry in the following format:
+   * `akka.actor.serialization-identifiers."FQCN" = ID`
+   * where `FQCN` is fully qualified class name of the serializer implementation
+   * and `ID` is globally unique serializer identifier number.
+   */
+  final val SerializationIdentifiers = "akka.actor.serialization-identifiers"
+
+  /** INTERNAL API */
+  @InternalApi
+  private[akka] def identifierFromConfig(clazz: Class[_], system: ExtendedActorSystem): Int =
+    system.settings.config.getInt(s"""${SerializationIdentifiers}."${clazz.getName}"""")
 }
 
 /**
@@ -271,14 +302,8 @@ object JavaSerializer {
  * This Serializer uses standard Java Serialization
  */
 class JavaSerializer(val system: ExtendedActorSystem) extends BaseSerializer {
-
-  @deprecated("Use constructor with ExtendedActorSystem", "2.4")
-  def this() = this(null)
-
-  // TODO remove this when deprecated this() is removed
-  override val identifier: Int =
-    if (system eq null) 1
-    else identifierFromConfig
+  if (!system.settings.AllowJavaSerialization)
+    throw new DisabledJavaSerializer.JavaSerializationException("Attempted creation of `JavaSerializer` while `akka.actor.allow-java-serialization = off` was set!")
 
   def includeManifest: Boolean = false
 
@@ -299,6 +324,50 @@ class JavaSerializer(val system: ExtendedActorSystem) extends BaseSerializer {
 }
 
 /**
+ * This Serializer is used when `akka.actor.java-serialization = off`
+ */
+final case class DisabledJavaSerializer(system: ExtendedActorSystem) extends Serializer with ByteBufferSerializer {
+  import DisabledJavaSerializer._
+
+  // use same identifier as JavaSerializer, since it's a replacement
+  override val identifier: Int = BaseSerializer.identifierFromConfig(classOf[JavaSerializer], system)
+
+  private[this] val empty = Array.empty[Byte]
+
+  private[this] val log = Logging.withMarker(system, getClass)
+
+  def includeManifest: Boolean = false
+
+  override def toBinary(o: AnyRef, buf: ByteBuffer): Unit = {
+    log.warning(LogMarker.Security, "Outgoing message attempted to use Java Serialization even though `akka.actor.allow-java-serialization = off` was set! " +
+      "Message type was: [{}]", o.getClass)
+    throw IllegalSerialization
+  }
+
+  override def fromBinary(bytes: Array[Byte], clazz: Option[Class[_]]): AnyRef = {
+    log.warning(LogMarker.Security, "Incoming message attempted to use Java Serialization even though `akka.actor.allow-java-serialization = off` was set! " +
+      "Message class was: [{}]", clazz)
+    throw IllegalDeserialization
+  }
+
+  override def fromBinary(buf: ByteBuffer, manifest: String): AnyRef = {
+    this.fromBinary(empty, None)
+  }
+
+  override def toBinary(o: AnyRef): Array[Byte] = {
+    toBinary(o, null)
+    empty // won't return, toBinary throws
+  }
+
+}
+
+object DisabledJavaSerializer {
+  final class JavaSerializationException(msg: String) extends RuntimeException(msg) with NoStackTrace
+  final val IllegalSerialization = new JavaSerializationException("Attempted to serialize message using Java serialization while `akka.actor.allow-java-serialization` was disabled. Check WARNING logs for more details.")
+  final val IllegalDeserialization = new JavaSerializationException("Attempted to deserialize message using Java serialization while `akka.actor.allow-java-serialization` was disabled. Check WARNING logs for more details.")
+}
+
+/**
  * This is a special Serializer that Serializes and deserializes nulls only
  */
 class NullSerializer extends Serializer {
@@ -314,14 +383,6 @@ class NullSerializer extends Serializer {
  * (just returns the byte array unchanged/uncopied)
  */
 class ByteArraySerializer(val system: ExtendedActorSystem) extends BaseSerializer with ByteBufferSerializer {
-
-  @deprecated("Use constructor with ExtendedActorSystem", "2.4")
-  def this() = this(null)
-
-  // TODO remove this when deprecated this() is removed
-  override val identifier: Int =
-    if (system eq null) 4
-    else identifierFromConfig
 
   def includeManifest: Boolean = false
   def toBinary(o: AnyRef): Array[Byte] = o match {

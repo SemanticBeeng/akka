@@ -22,7 +22,41 @@ It joins the cluster and an actor subscribes to cluster membership events and lo
 
 The ``application.conf`` configuration looks like this:
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/main/resources/application.conf#snippet
+::
+
+    akka {
+      actor {
+        provider = "cluster"
+      }
+      remote {
+        log-remote-lifecycle-events = off
+        netty.tcp {
+          hostname = "127.0.0.1"
+          port = 0
+        }
+      }
+
+      cluster {
+        seed-nodes = [
+          "akka.tcp://ClusterSystem@127.0.0.1:2551",
+          "akka.tcp://ClusterSystem@127.0.0.1:2552"]
+
+        # auto downing is NOT safe for production deployments.
+        # you may want to use it during development, read more about it in the docs.
+        #
+        # auto-down-unreachable-after = 10s
+      }
+    }
+
+    # Disable legacy metrics in akka-cluster.
+    akka.cluster.metrics.enabled=off
+
+    # Enable metrics extension in akka-cluster-metrics.
+    akka.extensions=["akka.cluster.metrics.ClusterMetricsExtension"]
+
+    # Sigar native library extract location during tests.
+    # Note: use per-jvm-instance folder when running multiple jvm on one host.
+    akka.cluster.metrics.native-library-extract-folder=${user.dir}/target/native
 
 To enable cluster capabilities in your Akka project you should, at a minimum, add the :ref:`remoting-scala`
 settings, but with ``cluster``.
@@ -39,7 +73,7 @@ ip-addresses or host names of the machines in ``application.conf`` instead of ``
 
 An actor that uses the cluster extension may look like this:
 
-.. literalinclude:: ../../../akka-samples/akka-sample-cluster-scala/src/main/scala/sample/cluster/simple/SimpleClusterListener.scala
+.. literalinclude:: code/docs/cluster/SimpleClusterListener.scala
    :language: scala
 
 The actor registers itself as subscriber of certain cluster events. It receives events corresponding to the current state
@@ -85,7 +119,7 @@ seed nodes in the existing cluster.
 
 If you don't configure seed nodes you need to join the cluster programmatically or manually.
 
-Manual joining can be performed by using ref:`cluster_jmx_scala` or :ref:`cluster_command_line_scala`.
+Manual joining can be performed by using ref:`cluster_jmx_scala` or :ref:`cluster_http_scala`.
 Joining programmatically can be performed with ``Cluster(system).join``. Unsuccessful join attempts are
 automatically retried after the time period defined in configuration property ``retry-unsuccessful-join-after``.
 Retries can be disabled by setting the property to ``off``.
@@ -129,7 +163,7 @@ leader is not allowed to perform its duties, such as changing status of
 new joining members to 'Up'. The node must first become reachable again, or the
 status of the unreachable member must be changed to 'Down'. Changing status to 'Down'
 can be performed automatically or manually. By default it must be done manually, using
-:ref:`cluster_jmx_scala` or :ref:`cluster_command_line_scala`.
+:ref:`cluster_jmx_scala` or :ref:`cluster_http_scala`.
 
 It can also be performed programmatically with ``Cluster(system).down(address)``.
 
@@ -176,17 +210,22 @@ as unreachable and removed after the automatic or manual downing as described
 above.
 
 A more graceful exit can be performed if you tell the cluster that a node shall leave.
-This can be performed using :ref:`cluster_jmx_scala` or :ref:`cluster_command_line_scala`.
+This can be performed using :ref:`cluster_jmx_scala` or :ref:`cluster_http_scala`.
 It can also be performed programmatically with:
 
 .. includecode:: code/docs/cluster/ClusterDocSpec.scala#leave
 
 Note that this command can be issued to any member in the cluster, not necessarily the
-one that is leaving. The cluster extension, but not the actor system or JVM, of the
-leaving member will be shutdown after the leader has changed status of the member to
-`Exiting`. Thereafter the member will be removed from the cluster. Normally this is handled
-automatically, but in case of network failures during this process it might still be necessary
-to set the node’s status to ``Down`` in order to complete the removal.
+one that is leaving.
+
+The :ref:`coordinated-shutdown-scala` will automatically run when the cluster node sees itself as 
+``Exiting``, i.e. leaving from another node will trigger the shutdown process on the leaving node. 
+Tasks for graceful leaving of cluster including graceful shutdown of Cluster Singletons and 
+Cluster Sharding are added automatically when Akka Cluster is used, i.e. running the shutdown 
+process will also trigger the graceful leaving if it's not already in progress. 
+
+Normally this is handled automatically, but in case of network failures during this process it might still 
+be necessary to set the node’s status to ``Down`` in order to complete the removal.
 
 .. _weakly_up_scala:
 
@@ -197,30 +236,18 @@ If a node is ``unreachable`` then gossip convergence is not possible and therefo
 ``leader`` actions are also not possible. However, we still might want new nodes to join
 the cluster in this scenario.
 
-.. warning::
-
-  The WeaklyUp feature is marked as **“experimental”** as of its introduction in Akka 2.4.0. We will continue to
-  improve this feature based on our users’ feedback, which implies that while we try to keep incompatible
-  changes to a minimum the binary compatibility guarantee for maintenance releases does not apply this feature.
-
-This feature is disabled by default. With a configuration option you can allow this behavior::
-
-    akka.cluster.allow-weakly-up-members = on
-
-When ``allow-weakly-up-members`` is enabled and there is no gossip convergence,
-``Joining`` members will be promoted to ``WeaklyUp`` and they will become part of the
-cluster. Once gossip convergence is reached, the leader will move ``WeaklyUp``
+``Joining`` members will be promoted to ``WeaklyUp`` and become part of the cluster if 
+convergence can't be reached. Once gossip convergence is reached, the leader will move ``WeaklyUp``
 members to ``Up``.
+
+This feature is enabled by default, but it can be disabled with configuration option::
+
+    akka.cluster.allow-weakly-up-members = off
 
 You can subscribe to the ``WeaklyUp`` membership event to make use of the members that are
 in this state, but you should be aware of that members on the other side of a network partition
 have no knowledge about the existence of the new members. You should for example not count
 ``WeaklyUp`` members in quorum decisions.
-
-.. warning::
-
-  This feature is only available from Akka 2.4.0 and cannot be used if some of your
-  cluster members are running an older version of Akka.
 
 
 .. _cluster_subscriber_scala:
@@ -231,7 +258,7 @@ Subscribe to Cluster Events
 You can subscribe to change notifications of the cluster membership by using
 ``Cluster(system).subscribe``.
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/main/scala/sample/cluster/simple/SimpleClusterListener2.scala#subscribe
+.. includecode:: code/docs/cluster/SimpleClusterListener2.scala
 
 A snapshot of the full state, ``akka.cluster.ClusterEvent.CurrentClusterState``, is sent to the subscriber
 as the first message, followed by events for incremental updates.
@@ -248,13 +275,13 @@ the events corresponding to the current state to mimic what you would have seen 
 listening to the events when they occurred in the past. Note that those initial events only correspond
 to the current state and it is not the full history of all changes that actually has occurred in the cluster.
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/main/scala/sample/cluster/simple/SimpleClusterListener.scala#subscribe
+.. includecode:: code/docs/cluster/SimpleClusterListener.scala#subscribe
 
 The events to track the life-cycle of members are:
 
 * ``ClusterEvent.MemberJoined`` - A new member has joined the cluster and its status has been changed to ``Joining``.
 * ``ClusterEvent.MemberUp`` - A new member has joined the cluster and its status has been changed to ``Up``.
-* ``ClusterEvent.MemberExited`` - A member is leaving the cluster and its status has been changed to ``Exiting``
+* ``ClusterEvent.MemberExited`` - A member is leaving the cluster and its status has been changed to ``Exiting``.
   Note that the node might already have been shutdown when this event is published on another node.
 * ``ClusterEvent.MemberRemoved`` - Member completely removed from the cluster.
 * ``ClusterEvent.UnreachableMember`` - A member is considered as unreachable, detected by the failure detector
@@ -284,11 +311,11 @@ added or removed to the cluster dynamically.
 
 Messages:
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/main/scala/sample/cluster/transformation/TransformationMessages.scala#messages
+.. includecode:: code/docs/cluster/TransformationMessages.scala#messages
 
 The backend worker that performs the transformation job:
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/main/scala/sample/cluster/transformation/TransformationBackend.scala#backend
+.. includecode:: code/docs/cluster/TransformationBackend.scala#backend
 
 Note that the ``TransformationBackend`` actor subscribes to cluster events to detect new,
 potential, frontend nodes, and send them a registration message so that they know
@@ -296,7 +323,7 @@ that they can use the backend worker.
 
 The frontend that receives user jobs and delegates to one of the registered backend workers:
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/main/scala/sample/cluster/transformation/TransformationFrontend.scala#frontend
+.. includecode:: code/docs/cluster/TransformationFrontend.scala#frontend
 
 Note that the ``TransformationFrontend`` actor watch the registered backend
 to be able to remove it from its list of available backend workers.
@@ -330,20 +357,23 @@ A common use case is to start actors after the cluster has been initialized,
 members have joined, and the cluster has reached a certain size.
 
 With a configuration option you can define required number of members
-before the leader changes member status of 'Joining' members to 'Up'.
+before the leader changes member status of 'Joining' members to 'Up'.::
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/main/resources/factorial.conf#min-nr-of-members
+  akka.cluster.min-nr-of-members = 3
 
 In a similar way you can define required number of members of a certain role
-before the leader changes member status of 'Joining' members to 'Up'.
+before the leader changes member status of 'Joining' members to 'Up'.::
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/main/resources/factorial.conf#role-min-nr-of-members
+  akka.cluster.role {
+    frontend.min-nr-of-members = 1
+    backend.min-nr-of-members = 2
+  }
 
 You can start the actors in a ``registerOnMemberUp`` callback, which will
 be invoked when the current member status is changed to 'Up', i.e. the cluster
 has at least the defined number of members.
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/main/scala/sample/cluster/factorial/FactorialFrontend.scala#registerOnUp
+.. includecode:: code/docs/cluster/FactorialFrontend.scala#registerOnUp
 
 This callback can be used for other things than starting actors.
 
@@ -353,9 +383,7 @@ How To Cleanup when Member is Removed
 You can do some clean up in a ``registerOnMemberRemoved`` callback, which will
 be invoked when the current member status is changed to 'Removed' or the cluster have been shutdown.
 
-For example, this is how to shut down the ``ActorSystem`` and thereafter exit the JVM:
-
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/main/scala/sample/cluster/factorial/FactorialFrontend.scala#registerOnRemoved
+An alternative is to register tasks to the :ref:`coordinated-shutdown-scala`.
 
 .. note::
    Register a OnMemberRemoved callback on a cluster that have been shutdown, the callback will be invoked immediately on
@@ -518,9 +546,19 @@ Router with Group of Routees
 ----------------------------
 
 When using a ``Group`` you must start the routee actors on the cluster member nodes.
-That is not done by the router. The configuration for a group looks like this:
+That is not done by the router. The configuration for a group looks like this:::
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/multi-jvm/scala/sample/cluster/stats/StatsSampleSpec.scala#router-lookup-config
+    akka.actor.deployment {
+      /statsService/workerRouter {
+          router = consistent-hashing-group
+          routees.paths = ["/user/statsWorker"]
+          cluster {
+            enabled = on
+            allow-local-routees = on
+            use-role = compute
+          }
+        }
+    }
 
 .. note::
   The routee actors should be started as early as possible when starting the actor system, because
@@ -537,7 +575,7 @@ Set it to a lower value if you want to limit total number of routees.
 
 The same type of router could also have been defined in code:
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/main/scala/sample/cluster/stats/Extra.scala#router-lookup-in-code
+.. includecode:: ../../../akka-cluster-metrics/src/multi-jvm/scala/akka/cluster/metrics/sample/StatsService.scala#router-lookup-in-code
 
 See :ref:`cluster_configuration_scala` section for further descriptions of the settings.
 
@@ -555,23 +593,33 @@ the average number of characters per word when all results have been collected.
 
 Messages:
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/main/scala/sample/cluster/stats/StatsMessages.scala#messages
+.. includecode:: ../../../akka-cluster-metrics/src/multi-jvm/scala/akka/cluster/metrics/sample/StatsMessages.scala#messages
 
 The worker that counts number of characters in each word:
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/main/scala/sample/cluster/stats/StatsWorker.scala#worker
+.. includecode:: ../../../akka-cluster-metrics/src/multi-jvm/scala/akka/cluster/metrics/sample/StatsWorker.scala#worker
 
 The service that receives text from users and splits it up into words, delegates to workers and aggregates:
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/main/scala/sample/cluster/stats/StatsService.scala#service
+.. includecode:: ../../../akka-cluster-metrics/src/multi-jvm/scala/akka/cluster/metrics/sample/StatsService.scala#service
 
 
 Note, nothing cluster specific so far, just plain actors.
 
 All nodes start ``StatsService`` and ``StatsWorker`` actors. Remember, routees are the workers in this case.
-The router is configured with ``routees.paths``:
+The router is configured with ``routees.paths``:::
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/main/resources/stats1.conf#config-router-lookup
+    akka.actor.deployment {
+      /statsService/workerRouter {
+        router = consistent-hashing-group
+        routees.paths = ["/user/statsWorker"]
+        cluster {
+          enabled = on
+          allow-local-routees = on
+          use-role = compute
+        }
+      }
+    }
 
 This means that user requests can be sent to ``StatsService`` on any node and it will use
 ``StatsWorker`` on all nodes.
@@ -584,9 +632,19 @@ Router with Pool of Remote Deployed Routees
 -------------------------------------------
 
 When using a ``Pool`` with routees created and deployed on the cluster member nodes
-the configuration for a router looks like this:
+the configuration for a router looks like this:::
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/multi-jvm/scala/sample/cluster/stats/StatsSampleSingleMasterSpec.scala#router-deploy-config
+    akka.actor.deployment {
+      /statsService/singleton/workerRouter {
+          router = consistent-hashing-pool
+          cluster {
+            enabled = on
+            max-nr-of-instances-per-node = 3
+            allow-local-routees = on
+            use-role = compute
+          }
+        }
+    }
 
 It is possible to limit the deployment of routees to member nodes tagged with a certain role by
 specifying ``use-role``.
@@ -598,7 +656,7 @@ Set it to a lower value if you want to limit total number of routees.
 
 The same type of router could also have been defined in code:
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/main/scala/sample/cluster/stats/Extra.scala#router-deploy-in-code
+.. includecode:: ../../../akka-cluster-metrics/src/multi-jvm/scala/akka/cluster/metrics/sample/StatsService.scala#router-deploy-in-code
 
 See :ref:`cluster_configuration_scala` section for further descriptions of the settings.
 
@@ -607,21 +665,40 @@ Router Example with Pool of Remote Deployed Routees
 
 Let's take a look at how to use a cluster aware router on single master node that creates
 and deploys workers. To keep track of a single master we use the :ref:`cluster-singleton-scala`
-in the contrib module. The ``ClusterSingletonManager`` is started on each node.
+in the cluster-tools module. The ``ClusterSingletonManager`` is started on each node.::
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/main/scala/sample/cluster/stats/StatsSampleOneMaster.scala#create-singleton-manager
+    system.actorOf(
+      ClusterSingletonManager.props(
+        singletonProps = Props[StatsService],
+        terminationMessage = PoisonPill,
+        settings = ClusterSingletonManagerSettings(system).withRole("compute")),
+      name = "statsService")
 
 We also need an actor on each node that keeps track of where current single master exists and
-delegates jobs to the ``StatsService``.  That is provided by the ``ClusterSingletonProxy``.
+delegates jobs to the ``StatsService``.  That is provided by the ``ClusterSingletonProxy``.::
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/main/scala/sample/cluster/stats/StatsSampleOneMaster.scala#singleton-proxy
+    system.actorOf(
+      ClusterSingletonProxy.props(
+        singletonManagerPath = "/user/statsService",
+        settings = ClusterSingletonProxySettings(system).withRole("compute")),
+      name = "statsServiceProxy")
 
 The ``ClusterSingletonProxy`` receives text from users and delegates to the current ``StatsService``, the single
 master. It listens to cluster events to lookup the ``StatsService`` on the oldest node.
 
-All nodes start ``ClusterSingletonProxy`` and the ``ClusterSingletonManager``. The router is now configured like this:
+All nodes start ``ClusterSingletonProxy`` and the ``ClusterSingletonManager``. The router is now configured like this:::
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/main/resources/stats2.conf#config-router-deploy
+    akka.actor.deployment {
+      /statsService/singleton/workerRouter {
+        router = consistent-hashing-pool
+        cluster {
+          enabled = on
+          max-nr-of-instances-per-node = 3
+          allow-local-routees = on
+          use-role = compute
+        }
+      }
+    }
 
 The `Lightbend Activator <http://www.lightbend.com/platform/getstarted>`_ tutorial named
 `Akka Cluster Samples with Scala <http://www.lightbend.com/activator/template/akka-sample-cluster-scala>`_.
@@ -645,14 +722,14 @@ add the ``sbt-multi-jvm`` plugin and the dependency to ``akka-multi-node-testkit
 First, as described in :ref:`multi-node-testing`, we need some scaffolding to configure the ``MultiNodeSpec``.
 Define the participating roles and their :ref:`cluster_configuration_scala` in an object extending ``MultiNodeConfig``:
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/multi-jvm/scala/sample/cluster/stats/StatsSampleSpec.scala
+.. includecode:: ../../../akka-cluster-metrics/src/multi-jvm/scala/akka/cluster/metrics/sample/StatsSampleSpec.scala
    :include: MultiNodeConfig
    :exclude: router-lookup-config
 
 Define one concrete test class for each role/node. These will be instantiated on the different nodes (JVMs). They can be
 implemented differently, but often they are the same and extend an abstract test class, as illustrated here.
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/multi-jvm/scala/sample/cluster/stats/StatsSampleSpec.scala#concrete-tests
+.. includecode:: ../../../akka-cluster-metrics/src/multi-jvm/scala/akka/cluster/metrics/sample/StatsSampleSpec.scala#concrete-tests
 
 Note the naming convention of these classes. The name of the classes must end with ``MultiJvmNode1``, ``MultiJvmNode2``
 and so on. It is possible to define another suffix to be used by the ``sbt-multi-jvm``, but the default should be
@@ -660,18 +737,18 @@ fine in most cases.
 
 Then the abstract ``MultiNodeSpec``, which takes the ``MultiNodeConfig`` as constructor parameter.
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/multi-jvm/scala/sample/cluster/stats/StatsSampleSpec.scala#abstract-test
+.. includecode:: ../../../akka-cluster-metrics/src/multi-jvm/scala/akka/cluster/metrics/sample/StatsSampleSpec.scala#abstract-test
 
 Most of this can of course be extracted to a separate trait to avoid repeating this in all your tests.
 
 Typically you begin your test by starting up the cluster and let the members join, and create some actors.
 That can be done like this:
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/multi-jvm/scala/sample/cluster/stats/StatsSampleSpec.scala#startup-cluster
+.. includecode:: ../../../akka-cluster-metrics/src/multi-jvm/scala/akka/cluster/metrics/sample/StatsSampleSpec.scala#startup-cluster
 
 From the test you interact with the cluster using the ``Cluster`` extension, e.g. ``join``.
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/multi-jvm/scala/sample/cluster/stats/StatsSampleSpec.scala#join
+.. includecode:: ../../../akka-cluster-metrics/src/multi-jvm/scala/akka/cluster/metrics/sample/StatsSampleSpec.scala#join
 
 Notice how the `testActor` from :ref:`testkit <akka-testkit>` is added as :ref:`subscriber <cluster_subscriber_scala>`
 to cluster changes and then waiting for certain events, such as in this case all members becoming 'Up'.
@@ -679,7 +756,7 @@ to cluster changes and then waiting for certain events, such as in this case all
 The above code was running for all roles (JVMs). ``runOn`` is a convenient utility to declare that a certain block
 of code should only run for a specific role.
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/multi-jvm/scala/sample/cluster/stats/StatsSampleSpec.scala#test-statsService
+.. includecode:: ../../../akka-cluster-metrics/src/multi-jvm/scala/akka/cluster/metrics/sample/StatsSampleSpec.scala#test-statsService
 
 Once again we take advantage of the facilities in :ref:`testkit <akka-testkit>` to verify expected behavior.
 Here using ``testActor`` as sender (via ``ImplicitSender``) and verifying the reply with ``expectMsgPF``.
@@ -687,13 +764,24 @@ Here using ``testActor`` as sender (via ``ImplicitSender``) and verifying the re
 In the above code you can see ``node(third)``, which is useful facility to get the root actor reference of
 the actor system for a specific role. This can also be used to grab the ``akka.actor.Address`` of that node.
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/multi-jvm/scala/sample/cluster/stats/StatsSampleSpec.scala#addresses
+.. includecode:: ../../../akka-cluster-metrics/src/multi-jvm/scala/akka/cluster/metrics/sample/StatsSampleSpec.scala#addresses
 
+
+Management
+^^^^^^^^^^
+
+.. _cluster_http_scala:
+
+HTTP
+----
+
+Information and management of the cluster is available with a HTTP API. 
+See documentation of `akka/akka-cluster-management <https://github.com/akka/akka-cluster-management>`_.
 
 .. _cluster_jmx_scala:
 
 JMX
-^^^
+---
 
 Information and management of the cluster is available as JMX MBeans with the root name ``akka.Cluster``.
 The JMX information can be displayed with an ordinary JMX console such as JConsole or JVisualVM.
@@ -711,15 +799,19 @@ Member nodes are identified by their address, in format `akka.<protocol>://<acto
 
 .. _cluster_command_line_scala:
 
-Command Line Management
-^^^^^^^^^^^^^^^^^^^^^^^
+Command Line
+------------
 
-The cluster can be managed with the script `bin/akka-cluster` provided in the
-Akka distribution.
+.. warning::
+  **Deprecation warning** - The command line script has been deprecated and is scheduled for removal 
+  in the next major version. Use the :ref:`cluster_http_scala` API with `curl <https://curl.haxx.se/>`_
+  or similar instead.
+
+The cluster can be managed with the script ``akka-cluster`` provided in the Akka github repository here: @github@/akka-cluster/jmx-client. Place the script and the ``jmxsh-R5.jar`` library in the same directory.
 
 Run it without parameters to see instructions about how to use the script::
 
-  Usage: bin/akka-cluster <node-hostname> <jmx-port> <command> ...
+  Usage: ./akka-cluster <node-hostname> <jmx-port> <command> ...
 
   Supported commands are:
              join <node-url> - Sends request a JOIN node with the specified URL
@@ -737,19 +829,14 @@ Run it without parameters to see instructions about how to use the script::
   Where the <node-url> should be on the format of
     'akka.<protocol>://<actor-system-name>@<hostname>:<port>'
 
-  Examples: bin/akka-cluster localhost 9999 is-available
-            bin/akka-cluster localhost 9999 join akka.tcp://MySystem@darkstar:2552
-            bin/akka-cluster localhost 9999 cluster-status
+  Examples: ./akka-cluster localhost 9999 is-available
+            ./akka-cluster localhost 9999 join akka.tcp://MySystem@darkstar:2552
+            ./akka-cluster localhost 9999 cluster-status
 
 
 To be able to use the script you must enable remote monitoring and management when starting the JVMs of the cluster nodes,
-as described in `Monitoring and Management Using JMX Technology <http://docs.oracle.com/javase/6/docs/technotes/guides/management/agent.html>`_
-
-Example of system properties to enable remote monitoring and management::
-
-  java -Dcom.sun.management.jmxremote.port=9999 \
-  -Dcom.sun.management.jmxremote.authenticate=false \
-  -Dcom.sun.management.jmxremote.ssl=false
+as described in `Monitoring and Management Using JMX Technology <http://docs.oracle.com/javase/8/docs/technotes/guides/management/agent.html>`_.
+Make sure you understand the security implications of enabling remote monitoring and management.
 
 .. _cluster_configuration_scala:
 

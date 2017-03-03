@@ -94,9 +94,7 @@ Dangerous Variants
 This method is not recommended to be used within another actor because it
 encourages to close over the enclosing scope, resulting in non-serializable
 :class:`Props` and possibly race conditions (breaking the actor encapsulation).
-We will provide a macro-based solution in a future release which allows similar
-syntax without the headaches, at which point this variant will be properly
-deprecated. On the other hand using this variant in a :class:`Props` factory in
+On the other hand using this variant in a :class:`Props` factory in
 the actor’s companion object as documented under “Recommended Practices” below
 is completely fine.
 
@@ -786,6 +784,84 @@ before stopping the target actor. Simple cleanup tasks can be handled in ``postS
   returned. In order to guarantee proper deregistration, only reuse names from
   within a supervisor you control and only in response to a :class:`Terminated`
   message, i.e. not for top-level actors.
+
+.. _coordinated-shutdown-scala:
+
+Coordinated Shutdown
+--------------------
+
+There is an extension named ``CoordinatedShutdown`` that will stop certain actors and 
+services in a specific order and perform registered tasks during the shutdown process.
+
+The order of the shutdown phases is defined in configuration ``akka.coordinated-shutdown.phases``.
+The default phases are defined as:
+
+.. includecode:: ../../../akka-actor/src/main/resources/reference.conf#coordinated-shutdown-phases
+
+More phases can be be added in the application's configuration if needed by overriding a phase with an
+additional ``depends-on``. Especially the phases ``before-service-unbind``, ``before-cluster-shutdown`` and
+``before-actor-system-terminate`` are intended for application specific phases or tasks.
+
+The default phases are defined in a single linear order, but the phases can be ordered as a 
+directed acyclic graph (DAG) by defining the dependencies between the phases.
+The phases are ordered with `topological <https://en.wikipedia.org/wiki/Topological_sorting>`_ sort of the DAG. 
+
+Tasks can be added to a phase with:
+
+.. includecode:: code/docs/actor/ActorDocSpec.scala#coordinated-shutdown-addTask
+
+The returned ``Future[Done]`` should be completed when the task is completed. The task name parameter
+is only used for debugging/logging. 
+
+Tasks added to the same phase are executed in parallel without any ordering assumptions. 
+Next phase will not start until all tasks of previous phase have been completed.
+
+If tasks are not completed within a configured timeout (see :ref:`reference.conf <config-akka-actor>`)
+the next phase will be started anyway. It is possible to configure ``recover=off`` for a phase
+to abort the rest of the shutdown process if a task fails or is not completed within the timeout.
+
+Tasks should typically be registered as early as possible after system startup. When running 
+the coordinated shutdown tasks that have been registered will be performed but tasks that are 
+added too late will not be run.
+
+To start the coordinated shutdown process you can invoke ``run`` on the ``CoordinatedShutdown``
+extension:
+
+.. includecode:: code/docs/actor/ActorDocSpec.scala#coordinated-shutdown-run
+
+It's safe to call the ``run`` method multiple times. It will only run once.
+
+That also means that the ``ActorSystem`` will be terminated in the last phase. By default, the
+JVM is not forcefully stopped (it will be stopped if all non-daemon threads have been terminated).
+To enable a hard ``System.exit`` as a final action you can configure::
+
+  akka.coordinated-shutdown.exit-jvm = on
+
+When using :ref:`Akka Cluster <cluster_usage_scala>` the ``CoordinatedShutdown`` will automatically run
+when the cluster node sees itself as ``Exiting``, i.e. leaving from another node will trigger
+the shutdown process on the leaving node. Tasks for graceful leaving of cluster including graceful 
+shutdown of Cluster Singletons and Cluster Sharding are added automatically when Akka Cluster is used, 
+i.e. running the shutdown process will also trigger the graceful leaving if it's not already in progress. 
+
+By default, the ``CoordinatedShutdown`` will be run when the JVM process exits, e.g.
+via ``kill SIGTERM`` signal (``SIGINT`` ctrl-c doesn't work). This behavior can be disabled with::
+
+  akka.coordinated-shutdown.run-by-jvm-shutdown-hook=off
+
+If you have application specific JVM shutdown hooks it's recommended that you register them via the
+``CoordinatedShutdown`` so that they are running before Akka internal shutdown hooks, e.g. 
+those shutting down Akka Remoting (Artery).
+
+.. includecode:: code/docs/actor/ActorDocSpec.scala#coordinated-shutdown-jvm-hook
+
+For some tests it might be undesired to terminate the ``ActorSystem`` via ``CoordinatedShutdown``.
+You can disable that by adding the following to the configuration of the ``ActorSystem`` that is 
+used in the test::
+
+  # Don't terminate ActorSystem via CoordinatedShutdown in tests
+  akka.coordinated-shutdown.terminate-actor-system = off
+  akka.coordinated-shutdown.run-by-jvm-shutdown-hook = off
+  akka.cluster.run-coordinated-shutdown-when-down = off
 
 .. _Actor.HotSwap:
 

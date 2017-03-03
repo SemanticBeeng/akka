@@ -1,9 +1,9 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka
 
-import com.typesafe.tools.mima.plugin.MimaKeys.reportBinaryIssues
+import com.typesafe.tools.mima.plugin.MimaKeys.mimaReportBinaryIssues
 import com.typesafe.tools.mima.plugin.MimaPlugin
 import net.virtualvoid.sbt.graph.backend.SbtUpdateReport
 import net.virtualvoid.sbt.graph.DependencyGraphKeys._
@@ -83,7 +83,6 @@ object ValidatePullRequest extends AutoPlugin {
   def changedDirectoryIsDependency(changedDirs: Set[String],
                                     name: String,
                                     graphsToTest: Seq[(Configuration, ModuleGraph)])(log: Logger): Boolean = {
-    val dirsOrExperimental = changedDirs.flatMap(dir => Set(dir, s"$dir-experimental"))
     graphsToTest exists { case (ivyScope, deps) =>
       log.debug(s"Analysing [$ivyScope] scoped dependencies...")
 
@@ -92,7 +91,7 @@ object ValidatePullRequest extends AutoPlugin {
       // if this project depends on a modified module, we must test it
       deps.nodes.exists { m =>
         // match just by name, we'd rather include too much than too little
-        val dependsOnModule = dirsOrExperimental.find(m.id.name contains _)
+        val dependsOnModule = changedDirs.find(m.id.name contains _)
         val depends = dependsOnModule.isDefined
         if (depends) log.info(s"Project [$name] must be verified, because depends on [${dependsOnModule.get}]")
         depends
@@ -174,7 +173,7 @@ object ValidatePullRequest extends AutoPlugin {
             .map(_.takeWhile(_ != '/'))
             .filter(dir => dir.startsWith("akka-") || dir == "project")
             .toSet
-          log.info("Detected uncomitted changes in directories (including in dependency analysis): " + dirtyDirectories.mkString("[", ",", "]"))
+          log.info("Detected uncommitted changes in directories (including in dependency analysis): " + dirtyDirectories.mkString("[", ",", "]"))
           dirtyDirectories
         }
 
@@ -264,9 +263,9 @@ object MultiNodeWithPrValidation extends AutoPlugin {
 
   override def trigger = allRequirements
   override def requires = ValidatePullRequest && MultiNode
-  override lazy val projectSettings = Seq(
-    additionalTasks in ValidatePR += MultiNode.multiTest
-  )
+  override lazy val projectSettings =
+    if (MultiNode.multiNodeTestInTest) Seq(additionalTasks in ValidatePR += MultiNode.multiTest)
+    else Nil
 }
 
 /**
@@ -279,7 +278,7 @@ object MimaWithPrValidation extends AutoPlugin {
   override def trigger = allRequirements
   override def requires = ValidatePullRequest && MimaPlugin
   override lazy val projectSettings = Seq(
-    additionalTasks in ValidatePR += reportBinaryIssues
+    additionalTasks in ValidatePR += mimaReportBinaryIssues
   )
 }
 

@@ -2,7 +2,7 @@ package docs.io;
 
 import akka.actor.ActorRef;
 import akka.actor.Props;
-import akka.actor.UntypedActor;
+import akka.actor.AbstractActor;
 import akka.io.Inet;
 import akka.io.Tcp;
 import akka.io.TcpMessage;
@@ -13,27 +13,30 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 public class JavaReadBackPressure {
 
-    static public class Listener extends UntypedActor {
+    static public class Listener extends AbstractActor {
         ActorRef tcp;
         ActorRef listener;
 
         @Override
         //#pull-accepting
-        public void onReceive(Object message) throws Exception {
-            if (message instanceof Tcp.Bound) {
-                listener = getSender();
-                // Accept connections one by one
-                listener.tell(TcpMessage.resumeAccepting(1), getSelf());
-            } else if (message instanceof Tcp.Connected) {
-                ActorRef handler = getContext().actorOf(Props.create(PullEcho.class, getSender()));
-                getSender().tell(TcpMessage.register(handler), getSelf());
-                // Resume accepting connections
-                listener.tell(TcpMessage.resumeAccepting(1), getSelf());
-            }
+        public Receive createReceive() {
+            return receiveBuilder()
+                .match(Tcp.Bound.class, x -> {
+                  listener = sender();
+                  // Accept connections one by one
+                  listener.tell(TcpMessage.resumeAccepting(1), self());
+                })
+                .match(Tcp.Connected.class, x -> {
+                  ActorRef handler = getContext().actorOf(Props.create(PullEcho.class, sender()));
+                  sender().tell(TcpMessage.register(handler), self());
+                  // Resume accepting connections
+                  listener.tell(TcpMessage.resumeAccepting(1), self());
+                })
+                .build();
         }
         //#pull-accepting
 
@@ -43,8 +46,8 @@ public class JavaReadBackPressure {
             tcp = Tcp.get(getContext().system()).manager();
             final List<Inet.SocketOption> options = new ArrayList<Inet.SocketOption>();
             tcp.tell(
-               TcpMessage.bind(getSelf(), new InetSocketAddress("localhost", 0), 100, options, true),
-               getSelf()
+               TcpMessage.bind(self(), new InetSocketAddress("localhost", 0), 100, options, true),
+               self()
             );
             //#pull-mode-bind
         }
@@ -54,7 +57,7 @@ public class JavaReadBackPressure {
             final List<Inet.SocketOption> options = new ArrayList<Inet.SocketOption>();
             tcp.tell(
                TcpMessage.connect(new InetSocketAddress("localhost", 3000), null, options, null, true),
-               getSelf()
+               self()
             );
             //#pull-mode-connect
         }
@@ -63,7 +66,7 @@ public class JavaReadBackPressure {
     static public class Ack implements Tcp.Event {
     }
 
-    static public class PullEcho extends UntypedActor {
+    static public class PullEcho extends AbstractActor {
         final ActorRef connection;
 
         public PullEcho(ActorRef connection) {
@@ -73,21 +76,22 @@ public class JavaReadBackPressure {
         //#pull-reading-echo
         @Override
         public void preStart() throws Exception {
-            connection.tell(TcpMessage.resumeReading(), getSelf());
+            connection.tell(TcpMessage.resumeReading(), self());
         }
 
         @Override
-        public void onReceive(Object message) throws Exception {
-            if (message instanceof Tcp.Received) {
-                ByteString data = ((Tcp.Received) message).data();
-                connection.tell(TcpMessage.write(data, new Ack()), getSelf());
-            } else if (message instanceof Ack) {
-                connection.tell(TcpMessage.resumeReading(), getSelf());
-            }
+        public Receive createReceive() {
+            return receiveBuilder()
+                .match(Tcp.Received.class, message -> {
+                    ByteString data = message.data();
+                    connection.tell(TcpMessage.write(data, new Ack()), self());
+                })
+                .match(Ack.class, message -> {
+                    connection.tell(TcpMessage.resumeReading(), self());
+                })
+                .build();
         }
         //#pull-reading-echo
-
-
     }
 
 }

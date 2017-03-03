@@ -1,9 +1,10 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.cluster.sharding
 
 import java.net.URLEncoder
+
 import akka.actor.ActorLogging
 import akka.actor.ActorRef
 import akka.actor.ActorSystem
@@ -11,14 +12,17 @@ import akka.actor.Deploy
 import akka.actor.Props
 import akka.actor.Terminated
 import akka.cluster.sharding.Shard.ShardCommand
-import akka.persistence.PersistentActor
-import akka.persistence.SnapshotOffer
+import akka.persistence._
 import akka.actor.Actor
-import akka.persistence.RecoveryCompleted
-import akka.persistence.SaveSnapshotFailure
-import akka.persistence.SaveSnapshotSuccess
+
 import scala.concurrent.Future
 import scala.concurrent.duration.FiniteDuration
+import akka.cluster.Cluster
+import akka.cluster.ddata.ORSet
+import akka.cluster.ddata.ORSetKey
+import akka.cluster.ddata.Replicator._
+import akka.actor.Stash
+import akka.cluster.ddata.DistributedData
 
 /**
  * INTERNAL API
@@ -96,8 +100,13 @@ private[akka] object Shard {
     settings:           ClusterShardingSettings,
     extractEntityId:    ShardRegion.ExtractEntityId,
     extractShardId:     ShardRegion.ExtractShardId,
-    handOffStopMessage: Any): Props = {
-    if (settings.rememberEntities)
+    handOffStopMessage: Any,
+    replicator:         ActorRef,
+    majorityMinCap:     Int): Props = {
+    if (settings.rememberEntities && settings.stateStoreMode == ClusterShardingSettings.StateStoreModeDData) {
+      Props(new DDataShard(typeName, shardId, entityProps, settings, extractEntityId, extractShardId,
+        handOffStopMessage, replicator, majorityMinCap)).withDeploy(Deploy.local)
+    } else if (settings.rememberEntities && settings.stateStoreMode == ClusterShardingSettings.StateStoreModePersistence)
       Props(new PersistentShard(typeName, shardId, entityProps, settings, extractEntityId, extractShardId, handOffStopMessage))
         .withDeploy(Deploy.local)
     else
@@ -125,8 +134,7 @@ private[akka] class Shard(
 
   import ShardRegion.{ handOffStopperProps, EntityId, Msg, Passivate, ShardInitialized }
   import ShardCoordinator.Internal.{ HandOff, ShardStopped }
-  import Shard.{ State, RestartEntity, RestartEntities, EntityStopped, EntityStarted }
-  import Shard.{ ShardQuery, GetCurrentShardState, CurrentShardState, GetShardStats, ShardStats }
+  import Shard._
   import akka.cluster.sharding.ShardCoordinator.Internal.CoordinatorMessage
   import akka.cluster.sharding.ShardRegion.ShardRegionCommand
   import settings.tuningParameters._
@@ -145,7 +153,7 @@ private[akka] class Shard(
 
   def totalBufferSize = messageBuffers.foldLeft(0) { (sum, entity) ⇒ sum + entity._2.size }
 
-  def processChange[A](event: A)(handler: A ⇒ Unit): Unit =
+  def processChange[E <: StateChange](event: E)(handler: E ⇒ Unit): Unit =
     handler(event)
 
   def receive = receiveCommand
@@ -200,7 +208,7 @@ private[akka] class Shard(
   }
 
   def receiveTerminated(ref: ActorRef): Unit = {
-    if (handOffStopper.exists(_ == ref))
+    if (handOffStopper.contains(ref))
       context stop self
     else if (idByRef.contains(ref) && handOffStopper.isEmpty)
       entityTerminated(ref)
@@ -220,14 +228,16 @@ private[akka] class Shard(
 
   def passivate(entity: ActorRef, stopMessage: Any): Unit = {
     idByRef.get(entity) match {
-      case Some(id) if !messageBuffers.contains(id) ⇒
+      case Some(id) => if (!messageBuffers.contains(id)) {
         log.debug("Passivating started on entity {}", id)
 
         passivating = passivating + entity
         messageBuffers = messageBuffers.updated(id, Vector.empty)
         entity ! stopMessage
-
-      case _ ⇒ //ignored
+      } else {
+        log.debug("Passivation already in progress for {}. Not sending stopMessage back to entity.", entity)
+      }
+      case None    => log.debug("Unknown entity {}. Not sending stopMessage back to entity.", entity)
     }
   }
 
@@ -304,80 +314,35 @@ private[akka] class Shard(
 }
 
 /**
- * INTERNAL API
- *
- * This actor creates children entity actors on demand that it is told to be
- * responsible for. It is used when `rememberEntities` is enabled.
- *
- * @see [[ClusterSharding$ ClusterSharding extension]]
+ * INTERNAL API: Common things for PersistentShard and DDataShard
  */
-private[akka] class PersistentShard(
-  typeName:           String,
-  shardId:            ShardRegion.ShardId,
-  entityProps:        Props,
-  settings:           ClusterShardingSettings,
-  extractEntityId:    ShardRegion.ExtractEntityId,
-  extractShardId:     ShardRegion.ExtractShardId,
-  handOffStopMessage: Any) extends Shard(
-  typeName, shardId, entityProps, settings, extractEntityId, extractShardId, handOffStopMessage)
-  with PersistentActor with ActorLogging {
-
+private[akka] trait RememberingShard { selfType: Shard ⇒
   import ShardRegion.{ EntityId, Msg }
-  import Shard.{ State, RestartEntity, RestartEntities, EntityStopped, EntityStarted }
-  import settings.tuningParameters._
+  import Shard._
   import akka.pattern.pipe
 
-  val rememberedEntitiesRecoveryStrategy: EntityRecoveryStrategy =
+  protected val settings: ClusterShardingSettings
+
+  protected val rememberedEntitiesRecoveryStrategy: EntityRecoveryStrategy = {
+    import settings.tuningParameters._
     entityRecoveryStrategy match {
       case "all" ⇒ EntityRecoveryStrategy.allStrategy()
       case "constant" ⇒ EntityRecoveryStrategy.constantStrategy(
         context.system,
         entityRecoveryConstantRateStrategyFrequency,
-        entityRecoveryConstantRateStrategyNumberOfEntities
-      )
-    }
-
-  override def persistenceId = s"/sharding/${typeName}Shard/${shardId}"
-
-  override def journalPluginId: String = settings.journalPluginId
-
-  override def snapshotPluginId: String = settings.snapshotPluginId
-
-  // would be initialized after recovery completed
-  override def initialized(): Unit = {}
-
-  override def receive = receiveCommand
-
-  override def processChange[A](event: A)(handler: A ⇒ Unit): Unit = {
-    saveSnapshotWhenNeeded()
-    persist(event)(handler)
-  }
-
-  def saveSnapshotWhenNeeded(): Unit = {
-    if (lastSequenceNr % snapshotAfter == 0 && lastSequenceNr != 0) {
-      log.debug("Saving snapshot, sequence number [{}]", snapshotSequenceNr)
-      saveSnapshot(state)
+        entityRecoveryConstantRateStrategyNumberOfEntities)
     }
   }
 
-  override def receiveRecover: Receive = {
-    case EntityStarted(id)                 ⇒ state = state.copy(state.entities + id)
-    case EntityStopped(id)                 ⇒ state = state.copy(state.entities - id)
-    case SnapshotOffer(_, snapshot: State) ⇒ state = snapshot
-    case RecoveryCompleted ⇒
-      restartRememberedEntities()
-      super.initialized()
-      log.debug("Shard recovery completed {}", shardId)
+  protected def restartRememberedEntities(): Unit = {
+    rememberedEntitiesRecoveryStrategy.recoverEntities(state.entities).foreach { scheduledRecovery ⇒
+      import context.dispatcher
+      scheduledRecovery.filter(_.nonEmpty).map(RestartEntities).pipeTo(self)
+    }
   }
-
-  override def receiveCommand: Receive = ({
-    case _: SaveSnapshotSuccess ⇒
-      log.debug("PersistentShard snapshot saved successfully")
-    case SaveSnapshotFailure(_, reason) ⇒
-      log.warning("PersistentShard snapshot failure: {}", reason.getMessage)
-  }: Receive).orElse(super.receiveCommand)
 
   override def entityTerminated(ref: ActorRef): Unit = {
+    import settings.tuningParameters._
     val id = idByRef(ref)
     if (messageBuffers.getOrElse(id, Vector.empty).nonEmpty) {
       //Note; because we're not persisting the EntityStopped, we don't need
@@ -404,17 +369,257 @@ private[akka] class PersistentShard(
       case None ⇒
         //Note; we only do this if remembering, otherwise the buffer is an overhead
         messageBuffers = messageBuffers.updated(id, Vector((msg, snd)))
-        saveSnapshotWhenNeeded()
-        persist(EntityStarted(id))(sendMsgBuffer)
+        processChange(EntityStarted(id))(sendMsgBuffer)
     }
   }
 
-  private def restartRememberedEntities(): Unit = {
-    rememberedEntitiesRecoveryStrategy.recoverEntities(state.entities).foreach { scheduledRecovery ⇒
-      import context.dispatcher
-      scheduledRecovery.filter(_.nonEmpty).map(RestartEntities).pipeTo(self)
+}
+
+/**
+ * INTERNAL API
+ *
+ * This actor creates children entity actors on demand that it is told to be
+ * responsible for. It is used when `rememberEntities` is enabled and
+ * `state-store-mode=persistence`.
+ *
+ * @see [[ClusterSharding$ ClusterSharding extension]]
+ */
+private[akka] class PersistentShard(
+  typeName:              String,
+  shardId:               ShardRegion.ShardId,
+  entityProps:           Props,
+  override val settings: ClusterShardingSettings,
+  extractEntityId:       ShardRegion.ExtractEntityId,
+  extractShardId:        ShardRegion.ExtractShardId,
+  handOffStopMessage:    Any) extends Shard(
+  typeName, shardId, entityProps, settings, extractEntityId, extractShardId, handOffStopMessage)
+  with RememberingShard with PersistentActor with ActorLogging {
+
+  import ShardRegion.{ EntityId, Msg }
+  import Shard._
+  import settings.tuningParameters._
+
+  override def persistenceId = s"/sharding/${typeName}Shard/$shardId"
+
+  override def journalPluginId: String = settings.journalPluginId
+
+  override def snapshotPluginId: String = settings.snapshotPluginId
+
+  // would be initialized after recovery completed
+  override def initialized(): Unit = {}
+
+  override def receive = receiveCommand
+
+  override def processChange[E <: StateChange](event: E)(handler: E ⇒ Unit): Unit = {
+    saveSnapshotWhenNeeded()
+    persist(event)(handler)
+  }
+
+  def saveSnapshotWhenNeeded(): Unit = {
+    if (lastSequenceNr % snapshotAfter == 0 && lastSequenceNr != 0) {
+      log.debug("Saving snapshot, sequence number [{}]", snapshotSequenceNr)
+      saveSnapshot(state)
     }
   }
+
+  override def receiveRecover: Receive = {
+    case EntityStarted(id)                 ⇒ state = state.copy(state.entities + id)
+    case EntityStopped(id)                 ⇒ state = state.copy(state.entities - id)
+    case SnapshotOffer(_, snapshot: State) ⇒ state = snapshot
+    case RecoveryCompleted ⇒
+      restartRememberedEntities()
+      super.initialized()
+      log.debug("PersistentShard recovery completed shard [{}] with [{}] entities", shardId, state.entities.size)
+  }
+
+  override def receiveCommand: Receive = ({
+    case SaveSnapshotSuccess(m) ⇒
+      log.debug("PersistentShard snapshot saved successfully")
+      /*
+       * delete old events but keep the latest around because
+       *
+       * it's not safe to delete all events immediate because snapshots are typically stored with a weaker consistency
+       * level which means that a replay might "see" the deleted events before it sees the stored snapshot,
+       * i.e. it will use an older snapshot and then not replay the full sequence of events
+       *
+       * for debugging if something goes wrong in production it's very useful to be able to inspect the events
+       */
+      val deleteToSequenceNr = m.sequenceNr - keepNrOfBatches * snapshotAfter
+      if (deleteToSequenceNr > 0) {
+        deleteMessages(deleteToSequenceNr)
+      }
+
+    case SaveSnapshotFailure(_, reason) ⇒
+      log.warning("PersistentShard snapshot failure: {}", reason.getMessage)
+
+    case DeleteMessagesSuccess(toSequenceNr) ⇒
+      log.debug("PersistentShard messages to {} deleted successfully", toSequenceNr)
+      deleteSnapshots(SnapshotSelectionCriteria(maxSequenceNr = toSequenceNr - 1))
+
+    case DeleteMessagesFailure(reason, toSequenceNr) ⇒
+      log.warning("PersistentShard messages to {} deletion failure: {}", toSequenceNr, reason.getMessage)
+
+    case DeleteSnapshotSuccess(m) ⇒
+      log.debug("PersistentShard snapshots matching {} deleted successfully", m)
+
+    case DeleteSnapshotFailure(m, reason) ⇒
+      log.warning("PersistentShard snapshots matching {} deletion falure: {}", m, reason.getMessage)
+
+  }: Receive).orElse(super.receiveCommand)
+
+}
+
+/**
+ * INTERNAL API
+ *
+ * This actor creates children entity actors on demand that it is told to be
+ * responsible for. It is used when `rememberEntities` is enabled and
+ * `state-store-mode=ddata`.
+ *
+ * @see [[ClusterSharding$ ClusterSharding extension]]
+ */
+private[akka] class DDataShard(
+  typeName:              String,
+  shardId:               ShardRegion.ShardId,
+  entityProps:           Props,
+  override val settings: ClusterShardingSettings,
+  extractEntityId:       ShardRegion.ExtractEntityId,
+  extractShardId:        ShardRegion.ExtractShardId,
+  handOffStopMessage:    Any,
+  replicator:            ActorRef,
+  majorityMinCap:        Int) extends Shard(
+  typeName, shardId, entityProps, settings, extractEntityId, extractShardId, handOffStopMessage)
+  with RememberingShard with Stash with ActorLogging {
+
+  import ShardRegion.{ EntityId, Msg }
+  import Shard._
+  import settings.tuningParameters._
+
+  private val readMajority = ReadMajority(
+    settings.tuningParameters.waitingForStateTimeout,
+    majorityMinCap)
+  private val writeMajority = WriteMajority(settings.tuningParameters.updatingStateTimeout, majorityMinCap)
+  private val maxUpdateAttempts = 3
+
+  implicit private val node = Cluster(context.system)
+
+  // The default maximum-frame-size is 256 KiB with Artery.
+  // When using entity identifiers with 36 character strings (e.g. UUID.randomUUID).
+  // By splitting the elements over 5 keys we can support 10000 entities per shard.
+  // The Gossip message size of 5 ORSet with 2000 ids is around 200 KiB.
+  // This is by intention not configurable because it's important to have the same
+  // configuration on each node.
+  private val numberOfKeys = 5
+  private val stateKeys: Array[ORSetKey[EntityId]] =
+    Array.tabulate(numberOfKeys)(i ⇒ ORSetKey[EntityId](s"shard-${typeName}-${shardId}-$i"))
+
+  private def key(entityId: EntityId): ORSetKey[EntityId] = {
+    val i = (math.abs(entityId.hashCode) % numberOfKeys)
+    stateKeys(i)
+  }
+
+  // get initial state from ddata replicator
+  getState()
+
+  private def getState(): Unit = {
+    (0 until numberOfKeys).map { i ⇒
+      replicator ! Get(stateKeys(i), readMajority, Some(i))
+    }
+  }
+
+  // would be initialized after recovery completed
+  override def initialized(): Unit = {}
+
+  override def receive = waitingForState(Set.empty)
+
+  // This state will stash all commands
+  private def waitingForState(gotKeys: Set[Int]): Receive = {
+    def receiveOne(i: Int): Unit = {
+      val newGotKeys = gotKeys + i
+      if (newGotKeys.size == numberOfKeys)
+        recoveryCompleted()
+      else
+        context.become(waitingForState(newGotKeys))
+    }
+
+    {
+      case g @ GetSuccess(_, Some(i: Int)) ⇒
+        val key = stateKeys(i)
+        state = state.copy(entities = state.entities union (g.get(key).elements))
+        receiveOne(i)
+
+      case GetFailure(_, _) ⇒
+        log.error(
+          "The DDataShard was unable to get an initial state within 'waiting-for-state-timeout': {} millis",
+          waitingForStateTimeout.toMillis)
+        // parent ShardRegion supervisor will notice that it terminated and will start it again, after backoff
+        context.stop(self)
+
+      case NotFound(_, Some(i: Int)) ⇒
+        receiveOne(i)
+
+      case _ ⇒
+        stash()
+    }
+  }
+
+  private def recoveryCompleted(): Unit = {
+    restartRememberedEntities()
+    super.initialized()
+    log.debug("DDataShard recovery completed shard [{}] with [{}] entities", shardId, state.entities.size)
+    unstashAll()
+    context.become(receiveCommand)
+  }
+
+  override def processChange[E <: StateChange](event: E)(handler: E ⇒ Unit): Unit = {
+    context.become(waitingForUpdate(event, handler), discardOld = false)
+    sendUpdate(event, retryCount = 1)
+  }
+
+  private def sendUpdate(evt: StateChange, retryCount: Int) = {
+    replicator ! Update(key(evt.entityId), ORSet.empty[EntityId], writeMajority,
+      Some((evt, retryCount))) { existing ⇒
+        evt match {
+          case EntityStarted(id) ⇒ existing + id
+          case EntityStopped(id) ⇒ existing - id
+        }
+      }
+  }
+
+  // this state will stash all messages until it receives UpdateSuccess
+  private def waitingForUpdate[E <: StateChange](evt: E, afterUpdateCallback: E ⇒ Unit): Receive = {
+    case UpdateSuccess(_, Some((`evt`, _))) ⇒
+      log.debug("The DDataShard state was successfully updated with {}", evt)
+      context.unbecome()
+      afterUpdateCallback(evt)
+      unstashAll()
+
+    case UpdateTimeout(_, Some((`evt`, retryCount: Int))) ⇒
+      if (retryCount == maxUpdateAttempts) {
+        // parent ShardRegion supervisor will notice that it terminated and will start it again, after backoff
+        log.error(
+          "The DDataShard was unable to update state after {} attempts, within 'updating-state-timeout'={} millis, event={}. " +
+            "Shard will be restarted after backoff.",
+          maxUpdateAttempts, updatingStateTimeout.toMillis, evt)
+        context.stop(self)
+      } else {
+        log.warning(
+          "The DDataShard was unable to update state, attempt {} of {}, within 'updating-state-timeout'={} millis, event={}",
+          retryCount, maxUpdateAttempts, updatingStateTimeout.toMillis, evt)
+        sendUpdate(evt, retryCount + 1)
+      }
+
+    case ModifyFailure(_, error, cause, Some((`evt`, _))) ⇒
+      log.error(
+        cause,
+        "The DDataShard was unable to update state with error {} and event {}. Shard will be restarted",
+        error,
+        evt)
+      throw cause
+
+    case _ ⇒ stash()
+  }
+
 }
 
 object EntityRecoveryStrategy {
@@ -439,8 +644,8 @@ final class AllAtOnceEntityRecoveryStrategy extends EntityRecoveryStrategy {
 
 final class ConstantRateEntityRecoveryStrategy(actorSystem: ActorSystem, frequency: FiniteDuration, numberOfEntities: Int) extends EntityRecoveryStrategy {
   import ShardRegion.EntityId
-  import akka.pattern.after
   import actorSystem.dispatcher
+  import akka.pattern.after
 
   override def recoverEntities(entities: Set[EntityId]): Set[Future[Set[EntityId]]] =
     entities.grouped(numberOfEntities).foldLeft((frequency, Set[Future[Set[EntityId]]]())) {

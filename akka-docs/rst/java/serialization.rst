@@ -145,6 +145,16 @@ This is how a ``SerializerWithStringManifest`` looks like:
 You must also bind it to a name in your :ref:`configuration` and then list which classes
 that should be serialized using it.
 
+It's recommended to throw ``java.io.NotSerializableException`` in ``fromBinary``
+if the manifest is unknown. This makes it possible to introduce new message types and
+send them to nodes that don't know about them. This is typically needed when performing 
+rolling upgrades, i.e. running a cluster with mixed versions for while.
+``NotSerializableException`` is treated as a transient problem in the TCP based remoting 
+layer. The problem will be logged and message is dropped. Other exceptions will tear down
+the TCP connection because it can be an indication of corrupt bytes from the underlying 
+transport.
+
+
 Serializing ActorRefs
 ---------------------
 
@@ -217,6 +227,17 @@ reading in the representation of an :class:`ActorRef` for turning the string
 representation into a real reference. :class:`DynamicVariable` is a
 thread-local variable, so be sure to have it set while deserializing anything
 which might contain actor references.
+
+Serialization compatibility
+===========================
+
+It is not safe to mix major Scala versions when using the Java serialization as Scala does not guarantee compatibility
+and this could lead to very surprising errors.
+
+If using the Akka Protobuf serializers (implicitly with ``akka.actor.allow-java-serialization = off`` or explicitly with
+``enable-additional-serialization-bindings = true``) for the internal Akka messages those will not require the same major
+Scala version however you must also ensure the serializers used for your own types does not introduce the same
+incompatibility as Java serialization does.
 
 External Akka Serializers
 =========================

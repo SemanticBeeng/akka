@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.io
 
@@ -59,6 +59,13 @@ private[io] trait WithUdpSend {
                 pendingCommander = null
             }
           case None ⇒
+            sender() ! CommandFailed(send)
+            log.debug(
+              "Name resolution failed for remote address [{}]",
+              send.target)
+            retriedSend = false
+            pendingSend = null
+            pendingCommander = null
         }
       } else {
         doSend(registration)

@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka
@@ -9,8 +9,6 @@ import java.io.InputStreamReader
 import java.util.Properties
 
 import akka.TestExtras.JUnitFileReporting
-import com.typesafe.sbt.S3Plugin.S3
-import com.typesafe.sbt.S3Plugin.s3Settings
 import com.typesafe.sbt.pgp.PgpKeys.publishSigned
 import com.typesafe.sbt.SbtMultiJvm.MultiJvmKeys.MultiJvm
 import com.typesafe.tools.mima.plugin.MimaPlugin
@@ -26,29 +24,20 @@ object AkkaBuild extends Build {
   // Load system properties from a file to make configuration from Jenkins easier
   loadSystemProperties("project/akka-build.properties")
 
-  override def buildLoaders = BuildLoader.transform(Sample.buildTransformer) :: Nil
-
   val enableMiMa = true
 
   val parallelExecutionByDefault = false // TODO: enable this once we're sure it does not break things
 
   lazy val buildSettings = Dependencies.Versions ++ Seq(
     organization        := "com.typesafe.akka",
-    version             := "2.4-SNAPSHOT"
+    version             := "2.5-SNAPSHOT"
   )
 
   lazy val rootSettings = parentSettings ++ Release.settings ++
-    SphinxDoc.akkaSettings ++ Dist.settings ++ s3Settings ++
+    SphinxDoc.akkaSettings ++
     UnidocRoot.akkaSettings ++
     Protobuf.settings ++ Seq(
-      parallelExecution in GlobalScope := System.getProperty("akka.parallelExecution", parallelExecutionByDefault.toString).toBoolean,
-      S3.host in S3.upload := "downloads.typesafe.com.s3.amazonaws.com",
-      S3.progress in S3.upload := true,
-      mappings in S3.upload <<= (Release.releaseDirectory, version) map { (d, v) =>
-        val downloads = d / "downloads"
-        val archivesPathFinder = downloads * s"*$v.zip"
-        archivesPathFinder.get.map(file => file -> ("akka/" + file.getName))
-      }
+      parallelExecution in GlobalScope := System.getProperty("akka.parallelExecution", parallelExecutionByDefault.toString).toBoolean
     )
 
   lazy val aggregatedProjects: Seq[ProjectReference] = Seq(
@@ -64,7 +53,6 @@ object AkkaBuild extends Build {
     contrib,
     distributedData,
     docs,
-    kernel,
     multiNodeTestkit,
     osgi,
     persistence,
@@ -74,7 +62,6 @@ object AkkaBuild extends Build {
     protobuf,
     remote,
     remoteTests,
-    samples,
     slf4j,
     stream,
     streamTestkit,
@@ -94,8 +81,7 @@ object AkkaBuild extends Build {
     id = "akka-scala-nightly",
     base = file("akka-scala-nightly"),
     // remove dependencies that we have to build ourselves (Scala STM)
-    // samples don't work with dbuild right now
-    aggregate = aggregatedProjects diff List[ProjectReference](agent, docs, samples)
+    aggregate = aggregatedProjects diff List[ProjectReference](agent, docs)
   ).disablePlugins(ValidatePullRequest, MimaPlugin)
 
   lazy val actor = Project(
@@ -110,7 +96,7 @@ object AkkaBuild extends Build {
   )
 
   lazy val typed = Project(
-    id = "akka-typed-experimental",
+    id = "akka-typed",
     base = file("akka-typed"),
     dependencies = Seq(testkit % "compile;test->test")
   )
@@ -176,16 +162,16 @@ object AkkaBuild extends Build {
   lazy val clusterSharding = Project(
     id = "akka-cluster-sharding",
     base = file("akka-cluster-sharding"),
-    // TODO akka-distributed-data dependency should be provided in pom.xml artifact.
+    // TODO akka-persistence dependency should be provided in pom.xml artifact.
     //      If I only use "provided" here it works, but then we can't run tests.
     //      Scope "test" is alright in the pom.xml, but would have been nicer with
     //      provided.
     dependencies = Seq(cluster % "compile->compile;test->test;multi-jvm->multi-jvm",
-        persistence % "compile;test->provided", distributedData % "provided;test", clusterTools)
+        distributedData, persistence % "compile;test->provided", clusterTools)
   ).configs(MultiJvm)
 
   lazy val distributedData = Project(
-    id = "akka-distributed-data-experimental",
+    id = "akka-distributed-data",
     base = file("akka-distributed-data"),
     dependencies = Seq(cluster % "compile->compile;test->test;multi-jvm->multi-jvm")
   ).configs(MultiJvm)
@@ -209,13 +195,12 @@ object AkkaBuild extends Build {
   )
 
   lazy val persistenceQuery = Project(
-    id = "akka-persistence-query-experimental",
+    id = "akka-persistence-query",
     base = file("akka-persistence-query"),
     dependencies = Seq(
       stream,
       persistence % "compile;provided->provided;test->test",
-      testkit % "compile;test->test",
-      streamTestkit % "compile;test->test")
+      streamTestkit % "test")
   )
 
   lazy val persistenceTck = Project(
@@ -254,12 +239,6 @@ object AkkaBuild extends Build {
     dependencies = Seq(streamTestkit % "test->test", stream)
   )
 
-  lazy val kernel = Project(
-    id = "akka-kernel",
-    base = file("akka-kernel"),
-    dependencies = Seq(actor, testkit % "test->test")
-  )
-
   lazy val camel = Project(
     id = "akka-camel",
     base = file("akka-camel"),
@@ -276,12 +255,13 @@ object AkkaBuild extends Build {
     id = "akka-docs",
     base = file("akka-docs"),
     dependencies = Seq(
-      actor,
+      actor, cluster, clusterMetrics, slf4j, agent, camel, osgi, persistenceTck, persistenceQuery, distributedData, stream,
+      clusterTools % "compile;test->test",
       testkit % "compile;test->test",
-      remote % "compile;test->test", cluster, clusterMetrics, slf4j, agent, camel, osgi,
-      persistence % "compile;provided->provided;test->test", persistenceTck, persistenceQuery,
-      typed % "compile;test->test", distributedData,
-      stream, streamTestkit % "compile;test->test"
+      remote % "compile;test->test",
+      persistence % "compile;provided->provided;test->test",
+      typed % "compile;test->test",
+      streamTestkit % "compile;test->test"
     )
   )
 
@@ -291,75 +271,10 @@ object AkkaBuild extends Build {
     dependencies = Seq(remote, remoteTests % "test->test", cluster, clusterTools, persistence % "compile;test->provided")
   ).configs(MultiJvm)
 
-  lazy val samplesSettings = parentSettings ++ ActivatorDist.settings
-
-  lazy val samples = Project(
-      id = "akka-samples",
-      base = file("akka-samples"),
-      // FIXME osgiDiningHakkersSampleMavenTest temporarily removed from aggregate due to #16703
-      aggregate = if (!Sample.CliOptions.aggregateSamples) Nil else
-        Seq(sampleCamelJava, sampleCamelScala, sampleClusterJava, sampleClusterScala, sampleFsmScala, sampleFsmJavaLambda,
-          sampleMainJava, sampleMainScala, sampleMainJavaLambda, sampleMultiNodeScala,
-          samplePersistenceJava, samplePersistenceScala, samplePersistenceJavaLambda,
-          sampleRemoteJava, sampleRemoteScala, sampleSupervisionJavaLambda,
-          sampleDistributedDataScala, sampleDistributedDataJava)
-    )
-    .settings(samplesSettings: _*)
-    .disablePlugins(MimaPlugin)
-
-  lazy val sampleCamelJava = Sample.project("akka-sample-camel-java")
-  lazy val sampleCamelScala = Sample.project("akka-sample-camel-scala")
-
-  lazy val sampleClusterJava = Sample.project("akka-sample-cluster-java")
-  lazy val sampleClusterScala = Sample.project("akka-sample-cluster-scala")
-
-  lazy val sampleFsmScala = Sample.project("akka-sample-fsm-scala")
-  lazy val sampleFsmJavaLambda = Sample.project("akka-sample-fsm-java-lambda")
-
-  lazy val sampleMainJava = Sample.project("akka-sample-main-java")
-  lazy val sampleMainScala = Sample.project("akka-sample-main-scala")
-  lazy val sampleMainJavaLambda = Sample.project("akka-sample-main-java-lambda")
-
-  lazy val sampleMultiNodeScala = Sample.project("akka-sample-multi-node-scala")
-
-  lazy val samplePersistenceJava = Sample.project("akka-sample-persistence-java")
-  lazy val samplePersistenceScala = Sample.project("akka-sample-persistence-scala")
-  lazy val samplePersistenceJavaLambda = Sample.project("akka-sample-persistence-java-lambda")
-
-  lazy val sampleRemoteJava = Sample.project("akka-sample-remote-java")
-  lazy val sampleRemoteScala = Sample.project("akka-sample-remote-scala")
-
-  lazy val sampleSupervisionJavaLambda = Sample.project("akka-sample-supervision-java-lambda")
-
-  lazy val sampleDistributedDataScala = Sample.project("akka-sample-distributed-data-scala")
-  lazy val sampleDistributedDataJava = Sample.project("akka-sample-distributed-data-java")
-
-  lazy val osgiDiningHakkersSampleMavenTest = Project(
-    id = "akka-sample-osgi-dining-hakkers-maven-test",
-    base = file("akka-samples/akka-sample-osgi-dining-hakkers-maven-test")
-  )
-  .settings(
-    publishArtifact := false,
-    // force publication of artifacts to local maven repo, so latest versions can be used when running maven tests
-    compile in Compile <<=
-      (publishM2 in actor, publishM2 in testkit, publishM2 in remote, publishM2 in cluster, publishM2 in osgi,
-        publishM2 in slf4j, publishM2 in persistence, compile in Compile) map
-        ((_, _, _, _, _, _, _, c) => c),
-    test in Test ~= { x => {
-      def executeMvnCommands(failureMessage: String, commands: String*) = {
-        if ({List("sh", "-c", commands.mkString("cd akka-samples/akka-sample-osgi-dining-hakkers; mvn ", " ", "")) !} != 0)
-          throw new Exception(failureMessage)
-      }
-      executeMvnCommands("Osgi sample Dining hakkers test failed", "clean", "install")
-    }}
-  )
-  .settings(dontPublishSettings: _*)
-
   val dontPublishSettings = Seq(
     publishSigned := (),
     publish := (),
-    publishArtifact in Compile := false,
-    Dist.includeInDist := false
+    publishArtifact in Compile := false
   )
 
   val dontPublishDocsSettings = Seq(
@@ -378,16 +293,16 @@ object AkkaBuild extends Build {
     publishArtifact := false
   ) ++ dontPublishSettings
 
-  lazy val experimentalSettings = Seq(
+  lazy val mayChangeSettings = Seq(
     description := """|This module of Akka is marked as
-                      |experimental, which means that it is in early
+                      |'may change', which means that it is in early
                       |access mode, which also means that it is not covered
-                      |by commercial support. An experimental module doesn't
+                      |by commercial support. An module marked 'may change' doesn't
                       |have to obey the rule of staying binary compatible
                       |between minor releases. Breaking API changes may be
                       |introduced in minor releases without notice as we
-                      |refine and simplify based on your feedback. An
-                      |experimental module may be dropped in major releases
+                      |refine and simplify based on your feedback. Additionally
+                      |such a module may be dropped in major releases
                       |without prior deprecation.
                       |""".stripMargin
   )
@@ -475,9 +390,7 @@ object AkkaBuild extends Build {
 
     // -v Log "test run started" / "test started" / "test run finished" events on log level "info" instead of "debug".
     // -a Show stack traces and exception class name for AssertionErrors.
-    testOptions += Tests.Argument(TestFrameworks.JUnit, "-v", "-a"),
-
-    Dist.includeInDist := true
+    testOptions += Tests.Argument(TestFrameworks.JUnit, "-v", "-a")
   ) ++
     mavenLocalResolverSettings ++
     JUnitFileReporting.settings ++

@@ -1,17 +1,21 @@
 /**
- * Copyright (C) 2015-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2015-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.stream.stage
 
-import java.util.concurrent.atomic.{ AtomicReference }
+import java.util.concurrent.atomic.AtomicReference
+
 import akka.NotUsed
 import java.util.concurrent.locks.ReentrantLock
+
 import akka.actor._
+import akka.annotation.ApiMayChange
 import akka.japi.function.{ Effect, Procedure }
 import akka.stream._
 import akka.stream.impl.StreamLayout.Module
-import akka.stream.impl.fusing.{ GraphInterpreter, GraphStageModule, SubSource, SubSink }
+import akka.stream.impl.fusing.{ GraphInterpreter, GraphStageModule, SubSink, SubSource }
 import akka.stream.impl.ReactiveStreamsCompliance
+
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.{ immutable, mutable }
 import scala.concurrent.duration.FiniteDuration
@@ -455,7 +459,7 @@ abstract class GraphStageLogic private[stream] (val inCount: Int, val outCount: 
 
       // Detailed error information should not add overhead to the hot path
       ReactiveStreamsCompliance.requireNonNullElement(elem)
-      require(!isClosed(out), s"Cannot pull closed port ($out)")
+      require(!isClosed(out), s"Cannot push closed port ($out)")
       require(isAvailable(out), s"Cannot push port ($out) twice")
 
       // No error, just InClosed caused the actual pull to be ignored, but the status flag still needs to be flipped
@@ -563,8 +567,7 @@ abstract class GraphStageLogic private[stream] (val inCount: Int, val outCount: 
             pos += 1
             if (pos == n) andThen(result)
           },
-          () ⇒ onClose(result.take(pos)))
-        )
+          () ⇒ onClose(result.take(pos))))
       } else andThen(result)
     }
 
@@ -922,6 +925,7 @@ abstract class GraphStageLogic private[stream] (val inCount: Int, val outCount: 
    * @return minimal actor with watch method
    */
   // FIXME: I don't like the Pair allocation :(
+  @ApiMayChange
   final protected def getStageActor(receive: ((ActorRef, Any)) ⇒ Unit): StageActor = {
     _stageActor match {
       case null ⇒

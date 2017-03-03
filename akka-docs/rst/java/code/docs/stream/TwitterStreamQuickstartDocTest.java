@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2015-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2015-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package docs.stream;
 
@@ -49,7 +49,7 @@ public class TwitterStreamQuickstartDocTest extends AbstractJavaTest {
 
   @BeforeClass
   public static void setup() {
-    system = ActorSystem.create("SampleActorTest");
+    system = ActorSystem.create("TwitterStreamQuickstartDocTest");
     mat = ActorMaterializer.create(system);
   }
 

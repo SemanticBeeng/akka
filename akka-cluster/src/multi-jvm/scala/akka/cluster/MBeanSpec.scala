@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.cluster
 
@@ -116,37 +116,37 @@ abstract class MBeanSpec
         val unreachableObservedBy = Vector(first, second, third).sorted.map(address(_))
         val expectedJson =
           s"""{
-             |  "self-address": "${address(first)}",
              |  "members": [
              |    {
              |      "address": "${sortedNodes(0)}",
-             |      "status": "Up",
              |      "roles": [
              |        "testNode"
-             |      ]
+             |      ],
+             |      "status": "Up"
              |    },
              |    {
              |      "address": "${sortedNodes(1)}",
-             |      "status": "Up",
              |      "roles": [
              |        "testNode"
-             |      ]
+             |      ],
+             |      "status": "Up"
              |    },
              |    {
              |      "address": "${sortedNodes(2)}",
-             |      "status": "Up",
              |      "roles": [
              |        "testNode"
-             |      ]
+             |      ],
+             |      "status": "Up"
              |    },
              |    {
              |      "address": "${sortedNodes(3)}",
-             |      "status": "Up",
              |      "roles": [
              |        "testNode"
-             |      ]
+             |      ],
+             |      "status": "Up"
              |    }
              |  ],
+             |  "self-address": "${address(first)}",
              |  "unreachable": [
              |    {
              |      "node": "${address(fourth)}",

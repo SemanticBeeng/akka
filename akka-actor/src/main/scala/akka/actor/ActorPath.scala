@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.actor
 import scala.annotation.{ switch, tailrec }
@@ -58,9 +58,6 @@ object ActorPath {
     case _                               ⇒ throw new MalformedURLException("cannot parse as ActorPath: " + s)
   }
 
-  @deprecated("Use `isValidPathElement` instead", since = "2.3.8")
-  val ElementRegex = """(?:[-\w:@&=+,.!~*'_;]|%\p{XDigit}{2})(?:[-\w:@&=+,.!~*'$_;]|%\p{XDigit}{2})*""".r
-
   private final val ValidSymbols = """-_.*$+:@&=,!~';"""
 
   private final val ValidPathCode = -1
@@ -88,9 +85,9 @@ object ActorPath {
       case ValidPathCode ⇒
       // valid
       case EmptyPathCode ⇒
-        throw new InvalidActorNameException(s"Actor path element must not be empty $fullPathMsg")
+        throw InvalidActorNameException(s"Actor path element must not be empty $fullPathMsg")
       case invalidAt ⇒
-        throw new InvalidActorNameException(
+        throw InvalidActorNameException(
           s"""Invalid actor path element [$element]$fullPathMsg, illegal character [${element(invalidAt)}] at position: $invalidAt. """ +
             """Actor paths MUST: """ +
             """not start with `$`, """ +

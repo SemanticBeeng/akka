@@ -1,11 +1,10 @@
 /**
- *  Copyright (C) 2015-2016 Lightbend Inc. <http://www.lightbend.com/>
+ *  Copyright (C) 2015-2017 Lightbend Inc. <http://www.lightbend.com/>
  */
 package docs.stream.javadsl.cookbook;
 
 import akka.NotUsed;
 import akka.actor.*;
-import akka.dispatch.Mapper;
 import akka.japi.pf.ReceiveBuilder;
 import akka.pattern.PatternsCS;
 import akka.stream.*;
@@ -18,7 +17,6 @@ import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import scala.PartialFunction;
-import scala.concurrent.Future;
 import scala.concurrent.duration.Duration;
 import scala.concurrent.duration.FiniteDuration;
 import scala.runtime.BoxedUnit;
@@ -87,14 +85,17 @@ public class RecipeGlobalRateLimit extends RecipeTest {
         this.tokenRefreshPeriod,
         self(),
         REPLENISH_TOKENS,
-        context().system().dispatcher(),
+        getContext().system().dispatcher(),
         self());
-
-      receive(open());
+    }
+    
+    @Override
+    public Receive createReceive() {
+      return open();
     }
 
-    PartialFunction<Object, BoxedUnit> open() {
-      return ReceiveBuilder
+    private Receive open() {
+      return receiveBuilder()
         .match(ReplenishTokens.class, rt -> {
           permitTokens = Math.min(permitTokens + tokenRefreshAmount, maxAvailableTokens);
         })
@@ -102,13 +103,14 @@ public class RecipeGlobalRateLimit extends RecipeTest {
           permitTokens -= 1;
           sender().tell(MAY_PASS, self());
           if (permitTokens == 0) {
-            context().become(closed());
+            getContext().become(closed());
           }
-        }).build();
+        })
+        .build();
     }
 
-    PartialFunction<Object, BoxedUnit> closed() {
-      return ReceiveBuilder
+    private Receive closed() {
+      return receiveBuilder()
         .match(ReplenishTokens.class, rt -> {
           permitTokens = Math.min(permitTokens + tokenRefreshAmount, maxAvailableTokens);
           releaseWaiting();
@@ -121,14 +123,15 @@ public class RecipeGlobalRateLimit extends RecipeTest {
 
     private void releaseWaiting() {
       final List<ActorRef> toBeReleased = new ArrayList<>(permitTokens);
-      for (int i = 0; i < permitTokens && i < waitQueue.size(); i++) {
-        toBeReleased.add(waitQueue.remove(i));
+      for (Iterator<ActorRef> it = waitQueue.iterator(); permitTokens > 0 && it.hasNext();) {
+          toBeReleased.add(it.next());
+          it.remove();
+          permitTokens --;
       }
 
-      permitTokens -= toBeReleased.size();
       toBeReleased.stream().forEach(ref -> ref.tell(MAY_PASS, self()));
       if (permitTokens > 0) {
-        context().become(open());
+        getContext().become(open());
       }
     }
 
@@ -186,7 +189,7 @@ public class RecipeGlobalRateLimit extends RecipeTest {
           }
         };
 
-        final FiniteDuration twoSeconds = Duration.create(2, TimeUnit.SECONDS);
+        final FiniteDuration twoSeconds = (FiniteDuration) dilated(Duration.create(2, TimeUnit.SECONDS));
 
         final Sink<String, TestSubscriber.Probe<String>> sink = TestSink.probe(system);
         final TestSubscriber.Probe<String> probe =

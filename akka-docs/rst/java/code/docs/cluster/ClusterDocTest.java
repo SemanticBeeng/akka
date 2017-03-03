@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2015-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2015-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package docs.cluster;
 
@@ -21,7 +21,7 @@ public class ClusterDocTest extends AbstractJavaTest {
   @BeforeClass
   public static void setup() {
     system = ActorSystem.create("ClusterDocTest", 
-        ConfigFactory.parseString(ClusterDocSpec.config()));
+        ConfigFactory.parseString(scala.docs.cluster.ClusterDocSpec.config()));
   }
 
   @AfterClass

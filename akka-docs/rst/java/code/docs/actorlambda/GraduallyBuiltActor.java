@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package docs.actorlambda;
@@ -15,10 +15,12 @@ import akka.japi.pf.UnitPFBuilder;
 
 //#actor
 public class GraduallyBuiltActor extends AbstractActor {
-  private final LoggingAdapter log = Logging.getLogger(context().system(), this);
+  private final LoggingAdapter log = Logging.getLogger(getContext().system(), this);
 
-  public GraduallyBuiltActor() {
-    UnitPFBuilder<Object> builder = ReceiveBuilder.create();
+  @Override
+  public Receive createReceive() {
+    ReceiveBuilder builder = ReceiveBuilder.create();
+    
     builder.match(String.class, s -> {
       log.info("Received String message: {}", s);
       //#actor
@@ -27,9 +29,12 @@ public class GraduallyBuiltActor extends AbstractActor {
       //#reply
       //#actor
     });
+    
     // do some other stuff in between
+    
     builder.matchAny(o -> log.info("received unknown message"));
-    receive(builder.build());
+    
+    return builder.build();
   }
 }
 //#actor

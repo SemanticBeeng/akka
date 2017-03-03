@@ -170,9 +170,8 @@ must be to begin the rebalancing. This strategy can be replaced by an applicatio
 implementation.
 
 The state of shard locations in the ``ShardCoordinator`` is persistent (durable) with
-:ref:`persistence-scala` to survive failures. Since it is running in a cluster :ref:`persistence-scala`
-must be configured with a distributed journal. When a crashed or unreachable coordinator
-node has been removed (via down) from the cluster a new ``ShardCoordinator`` singleton
+:ref:`distributed_data_scala` or :ref:`persistence-scala` to survive failures. When a crashed or 
+unreachable coordinator node has been removed (via down) from the cluster a new ``ShardCoordinator`` singleton
 actor will take over and the state is recovered. During such a failure period shards
 with known location are still available, while messages for new (unknown) shards
 are buffered until the new ``ShardCoordinator`` becomes available.
@@ -188,36 +187,56 @@ unused shards due to the round-trip to the coordinator. Rebalancing of shards ma
 also add latency. This should be considered when designing the application specific
 shard resolution, e.g. to avoid too fine grained shards.
 
+.. _cluster_sharding_mode_scala:
+
+Distributed Data vs. Persistence Mode
+-------------------------------------
+
+The state of the coordinator and the state of :ref:`cluster_sharding_remembering_scala` of the shards
+are persistent (durable) to survive failures. :ref:`distributed_data_scala` or :ref:`persistence-scala`
+can be used for the storage. Distributed Data is used by default.
+
+The functionality when using the two modes is the same. If your sharded entities are not using Akka Persistence
+themselves it is more convenient to use the Distributed Data mode, since then you don't have to
+setup and operate a separate data store (e.g. Cassandra) for persistence. Aside from that, there are
+no major reasons for using one mode over the the other.
+
+It's important to use the same mode on all nodes in the cluster, i.e. it's not possible to perform
+a rolling upgrade to change this setting.
+
 Distributed Data Mode
----------------------
+^^^^^^^^^^^^^^^^^^^^^
 
-Instead of using :ref:`persistence-scala` it is possible to use the :ref:`distributed_data_scala` module
-as storage for the state of the sharding coordinator. In such case the state of the 
-``ShardCoordinator`` will be replicated inside a cluster by the :ref:`distributed_data_scala` module with
-``WriteMajority``/``ReadMajority`` consistency.
+This mode is enabled with configuration (enabled by default)::
 
-This mode can be enabled by setting configuration property::
+  akka.cluster.sharding.state-store-mode = ddata
 
-    akka.cluster.sharding.state-store-mode = ddata 
+The state of the ``ShardCoordinator`` will be replicated inside a cluster by the 
+:ref:`distributed_data_scala` module with ``WriteMajority``/``ReadMajority`` consistency.
+The state of the coordinator is not durable, it's not stored to disk. When all nodes in
+the cluster have been stopped the state is lost and not needed any more.
 
-It is using the Distributed Data extension that must be running on all nodes in the cluster.
-Therefore you should add that extension to the configuration to make sure that it is started
-on all nodes::
+The state of :ref:`cluster_sharding_remembering_scala` is also durable, i.e. it is stored to
+disk. The stored entities are started also after a complete cluster restart.
 
-    akka.extensions += "akka.cluster.ddata.DistributedData"
+Cluster Sharding  is using its own Distributed Data ``Replicator`` per node role. In this way you can use a subset of
+all nodes for some entity types and another subset for other entity types. Each such replicator has a name
+that contains the node role and therefore the role configuration must be the same on all nodes in the
+cluster, i.e. you can't change the roles when performing a rolling upgrade. 
+ 
+The settings for Distributed Data is configured in the the section 
+``akka.cluster.sharding.distributed-data``. It's not possible to have different 
+``distributed-data`` settings for different sharding entity types.
 
-You must explicitly add the ``akka-distributed-data-experimental`` dependency to your build if
-you use this mode. It is possible to remove ``akka-persistence`` dependency from a project if it
-is not used in user code and ``remember-entities`` is ``off``.
-Using it together with ``Remember Entities`` shards will be recreated after rebalancing, however will
-not be recreated after a clean cluster start as the Sharding Coordinator state is empty after a clean cluster
-start when using ddata mode. When ``Remember Entities`` is ``on`` Sharding Region always keeps data usig persistence,
-no matter how ``State Store Mode`` is set.
+Persistence Mode
+^^^^^^^^^^^^^^^^
 
-.. warning::
+This mode is enabled with configuration::
 
-  The ``ddata`` mode is considered as **“experimental”** as of its introduction in Akka 2.4.0, since
-  it depends on the experimental Distributed Data module.
+  akka.cluster.sharding.state-store-mode = persistence
+
+Since it is running in a cluster :ref:`persistence-scala` must be configured with a distributed journal.
+
 
 Startup after minimum number of members
 ---------------------------------------
@@ -252,6 +271,8 @@ then supposed to stop itself. Incoming messages will be buffered by the ``Shard`
 between reception of ``Passivate`` and termination of the entity. Such buffered messages
 are thereafter delivered to a new incarnation of the entity.
 
+.. _cluster_sharding_remembering_scala:
+
 Remembering Entities
 --------------------
 
@@ -264,6 +285,13 @@ a ``Passivate`` message must be sent to the parent of the entity actor, otherwis
 entity will be automatically restarted after the entity restart backoff specified in 
 the configuration.
 
+When :ref:`Distributed Data mode <cluster_sharding_mode_scala>` is used the identifiers of the entities are
+stored in :ref:`ddata_durable_scala` of Distributed Data. You may want to change the 
+configuration of the akka.cluster.sharding.distributed-data.durable.lmdb.dir`, since
+the default directory contains the remote port of the actor system. If using a dynamically
+assigned port (0) it will be different each time and the previously stored data will not
+be loaded.
+
 When ``rememberEntities`` is set to false, a ``Shard`` will not automatically restart any entities
 after a rebalance or recovering from a crash. Entities will only be started once the first message
 for that entity has been received in the ``Shard``. Entities will not be restarted if they stop without
@@ -271,6 +299,10 @@ using a ``Passivate``.
 
 Note that the state of the entities themselves will not be restored unless they have been made persistent,
 e.g. with :ref:`persistence-scala`.
+
+The performance cost of ``rememberEntities`` is rather high when starting/stopping entities and when 
+shards are rebalanced. This cost increases with number of entities per shard and we currently don't
+recommend using it with more than 10000 entities per shard.
 
 Supervision
 -----------
@@ -295,11 +327,8 @@ You can send the message ``ShardRegion.GracefulShutdown`` message to the ``Shard
 During this period other regions will buffer messages for those shards in the same way as when a rebalance is
 triggered by the coordinator. When the shards have been stopped the coordinator will allocate these shards elsewhere.
 
-When the ``ShardRegion`` has terminated you probably want to ``leave`` the cluster, and shut down the ``ActorSystem``.
-
-This is how to do that: 
-
-.. includecode:: ../../../akka-cluster-sharding/src/multi-jvm/scala/akka/cluster/sharding/ClusterShardingGracefulShutdownSpec.scala#graceful-shutdown 
+This is performed automatically by the :ref:`coordinated-shutdown-scala` and is therefore part of the 
+graceful leaving process of a cluster member.
 
 .. _RemoveInternalClusterShardingData-scala:
 

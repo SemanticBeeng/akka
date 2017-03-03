@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.cluster
 
@@ -24,6 +24,7 @@ object QuickRestartMultiJvmSpec extends MultiNodeConfig {
   commonConfig(debugConfig(on = false).
     withFallback(ConfigFactory.parseString("""
       akka.cluster.auto-down-unreachable-after = off
+      akka.cluster.allow-weakly-up-members = off
       """)).
     withFallback(MultiNodeClusterSpec.clusterConfig))
 
@@ -69,17 +70,11 @@ abstract class QuickRestartSpec
                 system.name,
                 // use the same port
                 ConfigFactory.parseString(
-                  if (RARP(system).provider.remoteSettings.Artery.Enabled)
-                    s"""
+                  s"""
                        akka.cluster.roles = [round-$n]
+                       akka.remote.netty.tcp.port = ${Cluster(restartingSystem).selfAddress.port.get}
                        akka.remote.artery.canonical.port = ${Cluster(restartingSystem).selfAddress.port.get}
-                     """
-                  else
-                    s"""
-                      akka.cluster.roles = [round-$n]
-                      akka.remote.netty.tcp.port = ${Cluster(restartingSystem).selfAddress.port.get}
-                    """
-                ).withFallback(system.settings.config))
+                     """).withFallback(system.settings.config))
           log.info("Restarting node has address: {}", Cluster(restartingSystem).selfUniqueAddress)
           Cluster(restartingSystem).joinSeedNodes(seedNodes)
           within(20.seconds) {

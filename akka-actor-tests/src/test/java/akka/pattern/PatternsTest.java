@@ -16,7 +16,7 @@ import static akka.pattern.Patterns.pipe;
 import static org.junit.Assert.assertEquals;
 
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 public class PatternsTest extends JUnitSuite {
 
@@ -39,7 +39,7 @@ public class PatternsTest extends JUnitSuite {
         ActorRef testActor = system.actorOf(Props.create(JavaAPITestActor.class), "test2");
         ActorSelection selection = system.actorSelection("/user/test2");
         ActorIdentity id = (ActorIdentity) Await.result(ask(selection, new Identify("yo!"), 3000), Duration.create(3, "seconds"));
-        assertEquals("Ask (Identify) should return the proper ActorIdentity", testActor, id.getRef());
+        assertEquals("Ask (Identify) should return the proper ActorIdentity", testActor, id.getActorRef().get());
     }
 
     @Test

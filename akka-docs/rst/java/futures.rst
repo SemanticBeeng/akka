@@ -11,7 +11,7 @@ used to retrieve the result of some concurrent operation. This result can be acc
 or asynchronously (non-blocking). To be able to use this from Java, Akka provides a java friendly interface
 in ``akka.dispatch.Futures``.
 
-See also :ref:`actor-java-lambda` for Java compatibility.
+See also :ref:`scala-java-compat` for Java compatibility.
 
 Execution Contexts
 ------------------
@@ -30,8 +30,8 @@ by the ``ExecutionContexts`` class to wrap ``Executors`` and ``ExecutorServices`
 Use with Actors
 ---------------
 
-There are generally two ways of getting a reply from an ``UntypedActor``: the first is by a sent message (``actorRef.tell(msg, sender)``),
-which only works if the original sender was an ``UntypedActor``) and the second is through a ``Future``.
+There are generally two ways of getting a reply from an ``AbstractActor``: the first is by a sent message (``actorRef.tell(msg, sender)``),
+which only works if the original sender was an ``AbstractActor``) and the second is through a ``Future``.
 
 Using the ``ActorRef``\'s ``ask`` method to send a message will return a ``Future``.
 To wait for and retrieve the actual result the simplest method is:
@@ -42,11 +42,11 @@ To wait for and retrieve the actual result the simplest method is:
 .. includecode:: code/docs/future/FutureDocTest.java
    :include: ask-blocking
 
-This will cause the current thread to block and wait for the ``UntypedActor`` to 'complete' the ``Future`` with it's reply.
+This will cause the current thread to block and wait for the ``AbstractActor`` to 'complete' the ``Future`` with it's reply.
 Blocking is discouraged though as it can cause performance problem.
 The blocking operations are located in ``Await.result`` and ``Await.ready`` to make it easy to spot where blocking occurs.
 Alternatives to blocking are discussed further within this documentation.
-Also note that the ``Future`` returned by an ``UntypedActor`` is a ``Future<Object>`` since an ``UntypedActor`` is dynamic.
+Also note that the ``Future`` returned by an ``AbstractActor`` is a ``Future<Object>`` since an ``AbstractActor`` is dynamic.
 That is why the cast to ``String`` is used in the above sample.
 
 .. warning::
@@ -64,7 +64,7 @@ Use Directly
 ------------
 
 A common use case within Akka is to have some computation performed concurrently without needing
-the extra utility of an ``UntypedActor``. If you find yourself creating a pool of ``UntypedActor``\s for the sole reason
+the extra utility of an ``AbstractActor``. If you find yourself creating a pool of ``AbstractActor``\s for the sole reason
 of performing a calculation in parallel, there is an easier (and faster) way:
 
 .. includecode:: code/docs/future/FutureDocTest.java
@@ -75,8 +75,8 @@ of performing a calculation in parallel, there is an easier (and faster) way:
 
 In the above code the block passed to ``future`` will be executed by the default ``Dispatcher``,
 with the return value of the block used to complete the ``Future`` (in this case, the result would be the string: "HelloWorld").
-Unlike a ``Future`` that is returned from an ``UntypedActor``, this ``Future`` is properly typed,
-and we also avoid the overhead of managing an ``UntypedActor``.
+Unlike a ``Future`` that is returned from an ``AbstractActor``, this ``Future`` is properly typed,
+and we also avoid the overhead of managing an ``AbstractActor``.
 
 You can also create already completed Futures using the ``Futures`` class, which can be either successes:
 
@@ -229,7 +229,7 @@ Exceptions
 ----------
 
 Since the result of a ``Future`` is created concurrently to the rest of the program, exceptions must be handled differently.
-It doesn't matter if an ``UntypedActor`` or the dispatcher is completing the ``Future``, if an ``Exception`` is caught
+It doesn't matter if an ``AbstractActor`` or the dispatcher is completing the ``Future``, if an ``Exception`` is caught
 the ``Future`` will contain it instead of a valid result. If a ``Future`` does contain an ``Exception``,
 calling ``Await.result`` will cause it to be thrown again so it can be handled properly.
 
@@ -260,3 +260,88 @@ After
 
 .. includecode:: code/docs/future/FutureDocTest.java
    :include: after
+
+Java 8, CompletionStage and CompletableFuture
+---------------------------------------------
+
+Starting with Akka 2.4.2 we have begun to introduce Java 8 ``java.util.concurrent.CompletionStage`` in Java APIs.
+It's a ``scala.concurrent.Future`` counterpart in Java; conversion from ``scala.concurrent.Future`` is done using
+``scala-java8-compat`` library.
+
+Unlike ``scala.concurrent.Future`` which has async methods only, ``CompletionStage`` has *async* and *non-async* methods.
+
+The ``scala-java8-compat`` library returns its own implementation of ``CompletionStage`` which delegates all *non-async*
+methods to their *async* counterparts. The implementation extends standard Java ``CompletableFuture``.
+Java 8 ``CompletableFuture`` creates a new instance of ``CompletableFuture`` for any new stage,
+which means ``scala-java8-compat`` implementation is not used after the first mapping method.
+
+.. note::
+   After adding any additional computation stage to ``CompletionStage`` returned by ``scala-java8-compat``
+   (e.g. ``CompletionStage`` instances returned by Akka) it falls back to standard behaviour of Java ``CompletableFuture``.
+
+Actions supplied for dependent completions of *non-async* methods may be performed by the thread
+that completes the current ``CompletableFuture``, or by any other caller of a completion method.
+
+All *async* methods without an explicit Executor are performed using the ``ForkJoinPool.commonPool()`` executor.
+
+Non-async methods
+^^^^^^^^^^^^^^^^^
+
+When non-async methods are applied on a not yet completed ``CompletionStage``, they are completed by
+the thread which completes initial ``CompletionStage``:
+
+.. includecode:: code/docs/future/FutureDocTest.java
+   :include: apply-completion-thread
+
+In this example Scala ``Future`` is converted to ``CompletionStage`` just like Akka does.
+The completion is delayed: we are calling ``thenApply`` multiple times on a not yet complete ``CompletionStage``, then
+complete the ``Future``.
+
+First ``thenApply`` is actually performed on ``scala-java8-compat`` instance and computational stage (lambda) execution
+is delegated to default Java ``thenApplyAsync`` which is executed on ``ForkJoinPool.commonPool()``.
+
+Second and third ``thenApply`` methods are executed on Java 8 ``CompletableFuture`` instance which executes computational
+stages on the thread which completed the first stage. It is never executed on a thread of Scala ``Future`` because
+default ``thenApply`` breaks the chain and executes on ``ForkJoinPool.commonPool()``.
+
+
+In the next example ``thenApply`` methods are executed on an already completed ``Future``/``CompletionStage``:
+
+.. includecode:: code/docs/future/FutureDocTest.java
+   :include: apply-main-thread
+
+First ``thenApply`` is still executed on ``ForkJoinPool.commonPool()`` (because it is actually ``thenApplyAsync``
+which is always executed on global Java pool).
+
+Then we wait for stages to complete so second and third ``thenApply`` are executed on completed ``CompletionStage``,
+and stages are executed on the current thread - the thread which called second and third ``thenApply``.
+
+
+Async methods
+^^^^^^^^^^^^^
+
+As mentioned above, default *async* methods are always executed on ``ForkJoinPool.commonPool()``:
+
+.. includecode:: code/docs/future/FutureDocTest.java
+   :include: apply-async-default
+
+
+``CompletionStage`` also has *async* methods which take ``Executor`` as a second parameter, just like ``Future``:
+
+.. includecode:: code/docs/future/FutureDocTest.java
+   :include: apply-async-executor
+
+This example is behaving like ``Future``: every stage is executed on an explicitly specified ``Executor``.
+
+.. note::
+   When in doubt, async methods with explicit executor should be used. Always async methods with a dedicated
+   executor/dispatcher for long-running or blocking computations, such as IO operations.
+
+See also:
+
+- `CompletionStage <https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/CompletionStage.html>`_
+
+- `CompletableFuture <https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/CompletableFuture.html>`_
+
+- `scala-java8-compat <https://github.com/scala/scala-java8-compat>`_
+

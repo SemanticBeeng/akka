@@ -1,9 +1,10 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package docs.serialization {
 
+  import akka.actor.{ ExtensionId, ExtensionIdProvider }
   import akka.testkit._
   //#imports
   import akka.actor.{ ActorRef, ActorSystem }
@@ -11,7 +12,6 @@ package docs.serialization {
   import com.typesafe.config.ConfigFactory
 
   //#imports
-  import akka.actor.ExtensionKey
   import akka.actor.ExtendedActorSystem
   import akka.actor.Extension
   import akka.actor.Address
@@ -218,7 +218,14 @@ package docs.serialization {
       //#actorref-serializer
 
       //#external-address
-      object ExternalAddress extends ExtensionKey[ExternalAddressExt]
+      object ExternalAddress extends ExtensionId[ExternalAddressExt] with ExtensionIdProvider {
+        override def lookup() = ExternalAddress
+
+        override def createExtension(system: ExtendedActorSystem): ExternalAddressExt =
+          new ExternalAddressExt(system)
+
+        override def get(system: ActorSystem): ExternalAddressExt = super.get(system)
+      }
 
       class ExternalAddressExt(system: ExtendedActorSystem) extends Extension {
         def addressFor(remoteAddr: Address): Address =
@@ -236,7 +243,14 @@ package docs.serialization {
       val theActorSystem: ActorSystem = system
 
       //#external-address-default
-      object ExternalAddress extends ExtensionKey[ExternalAddressExt]
+      object ExternalAddress extends ExtensionId[ExternalAddressExt] with ExtensionIdProvider {
+        override def lookup() = ExternalAddress
+
+        override def createExtension(system: ExtendedActorSystem): ExternalAddressExt =
+          new ExternalAddressExt(system)
+
+        override def get(system: ActorSystem): ExternalAddressExt = super.get(system)
+      }
 
       class ExternalAddressExt(system: ExtendedActorSystem) extends Extension {
         def addressForAkka: Address = system.provider.getDefaultAddress

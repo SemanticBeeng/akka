@@ -7,20 +7,13 @@ Persistence Query for LevelDB
 This is documentation for the LevelDB implementation of the :ref:`persistence-query-scala` API.
 Note that implementations for other journals may have different semantics.
  
-.. warning::
-
-  This module is marked as **“experimental”** as of its introduction in Akka 2.4.0. We will continue to
-  improve this API based on our users’ feedback, which implies that while we try to keep incompatible
-  changes to a minimum the binary compatibility guarantee for maintenance releases does not apply to the
-  contents of the ``akka.persistence.query`` package.
-
 Dependencies
 ============
 
-Akka persistence LevelDB query implementation is bundled in the ``akka-persistence-query-experimental`` artifact.
+Akka persistence LevelDB query implementation is bundled in the ``akka-persistence-query`` artifact.
 Make sure that you have the following dependency in your project::
 
-  "com.typesafe.akka" %% "akka-persistence-query-experimental" % "@version@" @crossString@
+  "com.typesafe.akka" %% "akka-persistence-query" % "@version@" @crossString@
 
 How to get the ReadJournal
 ==========================
@@ -97,10 +90,14 @@ with the given ``tags``.
 
 .. includecode:: code/docs/persistence/query/LeveldbPersistenceQueryDocSpec.scala#tagger
 
-You can retrieve a subset of all events by specifying ``offset``, or use ``0L`` to retrieve all
-events with a given tag. The ``offset`` corresponds to an ordered sequence number for the specific tag.
-Note that the corresponding offset of each event is provided in the ``EventEnvelope``, which makes it possible
-to resume the stream at a later point from a given offset.
+You can use ``NoOffset`` to retrieve all events with a given tag or retrieve a subset of all
+events by specifying a ``Sequence`` ``offset``. The ``offset`` corresponds to an ordered sequence number for
+the specific tag. Note that the corresponding offset of each event is provided in the
+``EventEnvelope``, which makes it possible to resume the stream at a later point from a given offset.
+
+The ``offset`` is exclusive, i.e. the event with the exact same sequence number will not be included
+in the returned stream. This means that you can use the offset that is returned in ``EventEnvelope``
+as the ``offset`` parameter in a subsequent query.
 
 In addition to the ``offset`` the ``EventEnvelope`` also provides ``persistenceId`` and ``sequenceNr``
 for each event. The ``sequenceNr`` is the sequence number for the persistent actor with the

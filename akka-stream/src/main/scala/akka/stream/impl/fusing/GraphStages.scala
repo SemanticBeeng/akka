@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2015-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2015-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.stream.impl.fusing
 
@@ -75,11 +75,8 @@ object GraphStages {
   /**
    * INTERNAL API
    */
-  final class Detacher[T] extends GraphStage[FlowShape[T, T]] {
-    val in = Inlet[T]("Detacher.in")
-    val out = Outlet[T]("Detacher.out")
+  final class Detacher[T] extends SimpleLinearGraphStage[T] {
     override def initialAttributes = DefaultAttributes.detacher
-    override val shape = FlowShape(in, out)
 
     override def createLogic(inheritedAttributes: Attributes): GraphStageLogic = new GraphStageLogic(shape) with InHandler with OutHandler {
 

@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.remote.serialization
 
@@ -18,15 +18,7 @@ import akka.serialization.SerializerWithStringManifest
 
 class MessageContainerSerializer(val system: ExtendedActorSystem) extends BaseSerializer {
 
-  @deprecated("Use constructor with ExtendedActorSystem", "2.4")
-  def this() = this(null)
-
   private lazy val serialization = SerializationExtension(system)
-
-  // TODO remove this when deprecated this() is removed
-  override val identifier: Int =
-    if (system eq null) 6
-    else identifierFromConfig
 
   def includeManifest: Boolean = false
 

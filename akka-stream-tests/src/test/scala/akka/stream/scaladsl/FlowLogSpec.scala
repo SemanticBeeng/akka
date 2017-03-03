@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2014-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2014-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.stream.scaladsl
 
@@ -16,7 +16,10 @@ import scala.concurrent.duration._
 import scala.concurrent.Await
 import scala.util.control.NoStackTrace
 
-class FlowLogSpec extends StreamSpec("akka.loglevel = DEBUG") with ScriptedTest {
+class FlowLogSpec extends StreamSpec("""
+     akka.loglevel = DEBUG
+     akka.actor.serialize-messages = off
+     """) with ScriptedTest {
 
   implicit val mat: Materializer = ActorMaterializer()
 

@@ -1,11 +1,13 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package docs.testkit;
 
 import static org.junit.Assert.*;
 
 import akka.testkit.*;
+import docs.AbstractJavaTest;
+import org.junit.Assert;
 import org.junit.ClassRule;
 import org.junit.Test;
 
@@ -18,13 +20,13 @@ import akka.actor.Kill;
 import akka.actor.PoisonPill;
 import akka.actor.Props;
 import akka.actor.Terminated;
-import akka.actor.UntypedActor;
+import akka.actor.AbstractActor;
 import scala.concurrent.Await;
 import scala.concurrent.Future;
 import akka.testkit.TestActor.AutoPilot;
 import scala.concurrent.duration.Duration;
 
-public class TestKitDocTest {
+public class TestKitDocTest extends AbstractJavaTest {
 
   @ClassRule
   public static AkkaJUnitActorSystemResource actorSystemResource =
@@ -34,13 +36,17 @@ public class TestKitDocTest {
   private final ActorSystem system = actorSystemResource.getSystem();
 
   //#test-actor-ref
-  static class MyActor extends UntypedActor {
-    public void onReceive(Object o) throws Exception {
-      if (o.equals("say42")) {
-        getSender().tell(42, getSelf());
-      } else if (o instanceof Exception) {
-        throw (Exception) o;
-      }
+  static class MyActor extends AbstractActor {
+    @Override
+    public Receive createReceive() {
+      return receiveBuilder()
+        .matchEquals("say42", message -> {
+          sender().tell(42, self());
+        })
+        .match(Exception.class, (Exception ex) -> {
+          throw ex;
+        })
+        .build();
     }
     public boolean testMe() { return true; }
   }
@@ -72,7 +78,7 @@ public class TestKitDocTest {
     final TestActorRef<MyActor> ref = TestActorRef.create(system, props, "myActor");
     try {
       ref.receive(new Exception("expected"));
-      fail("expected an exception to be thrown");
+      Assert.fail("expected an exception to be thrown");
     } catch (Exception e) {
       assertEquals("expected", e.getMessage());
     }
@@ -259,14 +265,17 @@ public class TestKitDocTest {
     //#test-probe
     new JavaTestKit(system) {{
       // simple actor which just forwards messages
-      class Forwarder extends UntypedActor {
+      class Forwarder extends AbstractActor {
         final ActorRef target;
         @SuppressWarnings("unused")
         public Forwarder(ActorRef target) {
           this.target = target;
         }
-        public void onReceive(Object msg) {
-          target.forward(msg, getContext());
+        @Override
+        public Receive createReceive() {
+          return receiveBuilder()
+            .matchAny(message -> target.forward(message, getContext()))
+            .build();
         }
       }
       

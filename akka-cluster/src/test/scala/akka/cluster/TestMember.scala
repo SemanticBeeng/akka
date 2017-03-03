@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.cluster
 
@@ -10,5 +10,5 @@ object TestMember {
     apply(address, status, Set.empty)
 
   def apply(address: Address, status: MemberStatus, roles: Set[String]): Member =
-    new Member(UniqueAddress(address, 0), Int.MaxValue, status, roles)
+    new Member(UniqueAddress(address, 0L), Int.MaxValue, status, roles)
 }

@@ -1,9 +1,7 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.cluster
-
-// TODO remove metrics
 
 import language.postfixOps
 import scala.collection.immutable
@@ -13,6 +11,7 @@ import akka.cluster.ClusterEvent._
 import akka.cluster.MemberStatus._
 import akka.event.EventStream
 import akka.dispatch.{ UnboundedMessageQueueSemantics, RequiresMessageQueue }
+import akka.actor.DeadLetterSuppression
 
 /**
  * Domain events published to the event bus.
@@ -199,7 +198,7 @@ object ClusterEvent {
    * This event is published when the cluster node is shutting down,
    * before the final [[MemberRemoved]] events are published.
    */
-  final case object ClusterShuttingDown extends ClusterDomainEvent
+  final case object ClusterShuttingDown extends ClusterDomainEvent with DeadLetterSuppression
 
   /**
    * Java API: get the singleton instance of `ClusterShuttingDown` event
@@ -210,7 +209,9 @@ object ClusterEvent {
    * Marker interface to facilitate subscription of
    * both [[UnreachableMember]] and [[ReachableMember]].
    */
-  sealed trait ReachabilityEvent extends ClusterDomainEvent
+  sealed trait ReachabilityEvent extends ClusterDomainEvent {
+    def member: Member
+  }
 
   /**
    * A member is considered as unreachable by the failure detector.
@@ -223,18 +224,6 @@ object ClusterEvent {
    * @see [[UnreachableMember]]
    */
   final case class ReachableMember(member: Member) extends ReachabilityEvent
-
-  /**
-   * Current snapshot of cluster node metrics. Published to subscribers.
-   */
-  @deprecated("Superseded by akka.cluster.metrics (in akka-cluster-metrics jar)", "2.4")
-  final case class ClusterMetricsChanged(nodeMetrics: Set[NodeMetrics]) extends ClusterDomainEvent {
-    /**
-     * Java API
-     */
-    def getNodeMetrics: java.lang.Iterable[NodeMetrics] =
-      scala.collection.JavaConverters.asJavaIterableConverter(nodeMetrics).asJava
-  }
 
   /**
    * INTERNAL API
@@ -333,9 +322,9 @@ object ClusterEvent {
   private[cluster] def diffSeen(oldGossip: Gossip, newGossip: Gossip, selfUniqueAddress: UniqueAddress): immutable.Seq[SeenChanged] =
     if (newGossip eq oldGossip) Nil
     else {
-      val newConvergence = newGossip.convergence(selfUniqueAddress)
+      val newConvergence = newGossip.convergence(selfUniqueAddress, Set.empty)
       val newSeenBy = newGossip.seenBy
-      if (newConvergence != oldGossip.convergence(selfUniqueAddress) || newSeenBy != oldGossip.seenBy)
+      if (newConvergence != oldGossip.convergence(selfUniqueAddress, Set.empty) || newSeenBy != oldGossip.seenBy)
         List(SeenChanged(newConvergence, newSeenBy.map(_.address)))
       else Nil
     }

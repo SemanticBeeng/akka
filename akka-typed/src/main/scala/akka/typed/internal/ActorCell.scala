@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2016 Lightbend Inc. <http://www.lightbend.com/>
+ * Copyright (C) 2016-2017 Lightbend Inc. <http://www.lightbend.com/>
  */
 package akka.typed
 package internal
@@ -101,8 +101,8 @@ private[typed] class ActorCell[T](
   protected def ctx: ActorContext[T] = this
 
   override def spawn[U](behavior: Behavior[U], name: String, deployment: DeploymentConfig): ActorRef[U] = {
-    if (childrenMap contains name) throw new InvalidActorNameException(s"actor name [$name] is not unique")
-    if (terminatingMap contains name) throw new InvalidActorNameException(s"actor name [$name] is not yet free")
+    if (childrenMap contains name) throw InvalidActorNameException(s"actor name [$name] is not unique")
+    if (terminatingMap contains name) throw InvalidActorNameException(s"actor name [$name] is not yet free")
     val dispatcher = deployment.firstOrElse[DispatcherSelector](DispatcherFromExecutionContext(executionContext))
     val capacity = deployment.firstOrElse(MailboxCapacity(system.settings.DefaultMailboxCapacity))
     val cell = new ActorCell[U](system, Behavior.validateAsInitial(behavior), system.dispatchers.lookup(dispatcher), capacity.capacity, self)
@@ -144,12 +144,13 @@ private[typed] class ActorCell[T](
   override def schedule[U](delay: FiniteDuration, target: ActorRef[U], msg: U): Cancellable =
     system.scheduler.scheduleOnce(delay)(target ! msg)(ExecutionContexts.sameThreadExecutionContext)
 
-  override def spawnAdapter[U](f: U ⇒ T): ActorRef[U] = {
-    val name = Helpers.base64(nextName, new java.lang.StringBuilder("$!"))
+  override def spawnAdapter[U](f: U ⇒ T, _name: String = ""): ActorRef[U] = {
+    val baseName = Helpers.base64(nextName, new java.lang.StringBuilder("$!"))
     nextName += 1
+    val name = if (_name != "") s"$baseName-${_name}" else baseName
     val ref = new FunctionRef[U](
       self.path / name,
-      (msg, _) ⇒ send(f(msg)),
+      (msg, _) ⇒ { val m = f(msg); if (m != null) send(m) },
       (self) ⇒ sendSystem(DeathWatchNotification(self, null)))
     childrenMap = childrenMap.updated(name, ref)
     ref

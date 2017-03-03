@@ -14,19 +14,12 @@ side of an application, however it can help to migrate data from the write side 
 simple scenarios Persistence Query may be powerful enough to fulfill the query needs of your app, however we highly
 recommend (in the spirit of CQRS) of splitting up the write/read sides into separate datastores as the need arises.
 
-.. warning::
-
-  This module is marked as **“experimental”** as of its introduction in Akka 2.4.0. We will continue to
-  improve this API based on our users’ feedback, which implies that while we try to keep incompatible
-  changes to a minimum the binary compatibility guarantee for maintenance releases does not apply to the
-  contents of the ``akka.persistence.query`` package.
-
 Dependencies
 ============
 
 Akka persistence query is a separate jar file. Make sure that you have the following dependency in your project::
 
-  "com.typesafe.akka" %% "akka-persistence-query-experimental" % "@version@" @crossString@
+  "com.typesafe.akka" %% "akka-persistence-query" % "@version@" @crossString@
 
 Design overview
 ===============
@@ -127,7 +120,7 @@ tag - for example if the journal stored the events as json it may try to find th
 
 .. includecode:: code/docs/persistence/query/PersistenceQueryDocSpec.scala#events-by-tag
 
-As you can see, we can use all the usual stream combinators available from `Akka Streams`_ on the resulting query stream,
+As you can see, we can use all the usual stream combinators available from :ref:`streams-scala` on the resulting query stream,
 including for example taking the first 10 and cancelling the stream. It is worth pointing out that the built-in ``EventsByTag``
 query has an optionally supported offset parameter (of type ``Long``) which the journals can use to implement resumable-streams.
 For example a journal may be able to use a WHERE clause to begin the read starting from a specific row, or in a datastore
@@ -137,8 +130,8 @@ If your usage does not require a live stream, you can use the ``currentEventsByT
 
 Materialized values of queries
 ------------------------------
-Journals are able to provide additional information related to a query by exposing `materialized values`_,
-which are a feature of `Akka Streams`_ that allows to expose additional values at stream materialization time.
+Journals are able to provide additional information related to a query by exposing :ref:`materialized-values-quick-scala`,
+which are a feature of :ref:`streams-scala` that allows to expose additional values at stream materialization time.
 
 More advanced query journals may use this technique to expose information about the character of the materialized
 stream, for example if it's finite or infinite, strictly ordered or not ordered at all. The materialized value type
@@ -151,8 +144,6 @@ specialised query object, as demonstrated in the sample below:
 
 .. includecode:: code/docs/persistence/query/PersistenceQueryDocSpec.scala#advanced-journal-query-usage
 
-.. _materialized values: http://doc.akka.io/docs/akka-stream-and-http-experimental/1.0/scala/stream-quickstart.html#Materialized_values
-.. _Akka Streams: http://doc.akka.io/docs/akka-stream-and-http-experimental/1.0/scala.html
 .. _Community plugins: http://akka.io/community/#plugins-to-akka-persistence-query
 
 Performance and denormalization
@@ -249,6 +240,16 @@ Below is a simple journal implementation:
 And the ``eventsByTag`` could be backed by such an Actor for example:
 
 .. includecode:: code/docs/persistence/query/MyEventsByTagPublisher.scala#events-by-tag-publisher
+
+The ``ReadJournalProvider`` class must have a constructor with one of these signatures:
+
+* constructor with a ``ExtendedActorSystem`` parameter, a ``com.typesafe.config.Config`` parameter, and a ``String`` parameter for the config path
+* constructor with a ``ExtendedActorSystem`` parameter, and a ``com.typesafe.config.Config`` parameter
+* constructor with one ``ExtendedActorSystem`` parameter
+* constructor without parameters
+
+The plugin section of the actor system's config will be passed in the config constructor parameter. The config path
+of the plugin is passed in the ``String`` parameter.
 
 If the underlying datastore only supports queries that are completed when they reach the
 end of the "result set", the journal has to submit new queries after a while in order

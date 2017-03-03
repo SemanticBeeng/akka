@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.persistence.fsm
 
@@ -90,7 +90,6 @@ import scala.concurrent.duration.FiniteDuration
  *   isTimerActive("tock")
  * </pre>
  *
- * This is an EXPERIMENTAL feature and is subject to change until it has received more real world testing.
  */
 trait PersistentFSMBase[S, D, E] extends Actor with Listeners with ActorLogging {
 
@@ -485,7 +484,13 @@ trait PersistentFSMBase[S, D, E] extends Actor with Listeners with ActorLogging 
         this.nextState = null
       }
       currentState = nextState
-      val timeout = if (currentState.timeout.isDefined) currentState.timeout else stateTimeouts(currentState.stateName)
+      val timeout =
+        currentState.timeout match {
+          case PersistentFSM.SomeMaxFiniteDuration ⇒ None
+          case x: Some[FiniteDuration]             ⇒ x
+          case None                                ⇒ stateTimeouts(currentState.stateName)
+        }
+
       if (timeout.isDefined) {
         val t = timeout.get
         if (t.isFinite && t.length >= 0) {
@@ -542,7 +547,6 @@ trait PersistentFSMBase[S, D, E] extends Actor with Listeners with ActorLogging 
  * Stackable trait for [[akka.actor.FSM]] which adds a rolling event log and
  * debug logging capabilities (analogous to [[akka.event.LoggingReceive]]).
  *
- * This is an EXPERIMENTAL feature and is subject to change until it has received more real world testing.
  */
 trait LoggingPersistentFSM[S, D, E] extends PersistentFSMBase[S, D, E] { this: Actor ⇒
 
@@ -611,7 +615,6 @@ trait LoggingPersistentFSM[S, D, E] extends PersistentFSMBase[S, D, E] { this: A
 /**
  * Java API: compatible with lambda expressions
  *
- * This is an EXPERIMENTAL feature and is subject to change until it has received more real world testing.
  */
 object AbstractPersistentFSMBase {
   /**
@@ -630,7 +633,6 @@ object AbstractPersistentFSMBase {
  *
  * Finite State Machine actor abstract base class.
  *
- * This is an EXPERIMENTAL feature and is subject to change until it has received more real world testing.
  */
 abstract class AbstractPersistentFSMBase[S, D, E] extends PersistentFSMBase[S, D, E] {
   import akka.persistence.fsm.japi.pf.FSMStateFunctionBuilder
@@ -746,7 +748,7 @@ abstract class AbstractPersistentFSMBase[S, D, E] extends PersistentFSMBase[S, D
    * @return the builder with the case statement added
    */
   final def matchEvent[ET, DT <: D](eventType: Class[ET], dataType: Class[DT], predicate: TypedPredicate2[ET, DT], apply: Apply2[ET, DT, State]): FSMStateFunctionBuilder[S, D, E] =
-    new FSMStateFunctionBuilder[S, D, E]().event(eventType, dataType, apply)
+    new FSMStateFunctionBuilder[S, D, E]().event(eventType, dataType, predicate, apply)
 
   /**
    * Create an [[akka.japi.pf.FSMStateFunctionBuilder]] with the first case statement set.

@@ -1,5 +1,5 @@
 /**
- * Copyright (C-2015 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.stream.scaladsl
 
@@ -257,10 +257,11 @@ class FlowSplitWhenSpec extends StreamSpec {
     }
 
     "fail substream if materialized twice" in assertAllStagesStopped {
+      import system.dispatcher
       an[IllegalStateException] mustBe thrownBy {
         Await.result(
           Source.single(1).splitWhen(_ ⇒ true).lift
-            .mapAsync(1) { src ⇒ src.runWith(Sink.ignore); src.runWith(Sink.ignore) } // Sink.ignore+mapAsync pipes error back
+            .mapAsync(1) { src ⇒ src.runWith(Sink.ignore).flatMap(_ ⇒ src.runWith(Sink.ignore)) } // Sink.ignore+mapAsync pipes error back
             .runWith(Sink.ignore),
           3.seconds)
       }

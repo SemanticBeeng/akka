@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.cluster.ddata
 
@@ -46,7 +46,7 @@ class ReplicatorPruningSpec extends MultiNodeSpec(ReplicatorPruningSpec) with ST
 
   val KeyA = GCounterKey("A")
   val KeyB = ORSetKey[String]("B")
-  val KeyC = PNCounterMapKey("C")
+  val KeyC = PNCounterMapKey[String]("C")
 
   def join(from: RoleName, to: RoleName): Unit = {
     runOn(from) {
@@ -86,7 +86,7 @@ class ReplicatorPruningSpec extends MultiNodeSpec(ReplicatorPruningSpec) with ST
       replicator ! Update(KeyB, ORSet(), WriteAll(timeout))(_ + "a" + "b" + "c")
       expectMsg(UpdateSuccess(KeyB, None))
 
-      replicator ! Update(KeyC, PNCounterMap(), WriteAll(timeout))(_ increment "x" increment "y")
+      replicator ! Update(KeyC, PNCounterMap.empty[String], WriteAll(timeout)) { _ increment "x" increment "y" }
       expectMsg(UpdateSuccess(KeyC, None))
 
       enterBarrier("updates-done")
@@ -100,7 +100,7 @@ class ReplicatorPruningSpec extends MultiNodeSpec(ReplicatorPruningSpec) with ST
       oldSet.elements should be(Set("a", "b", "c"))
 
       replicator ! Get(KeyC, ReadLocal)
-      val oldMap = expectMsgType[GetSuccess[PNCounterMap]].dataValue
+      val oldMap = expectMsgType[GetSuccess[PNCounterMap[String]]].dataValue
       oldMap.get("x") should be(Some(3))
       oldMap.get("y") should be(Some(3))
 
@@ -122,14 +122,18 @@ class ReplicatorPruningSpec extends MultiNodeSpec(ReplicatorPruningSpec) with ST
 
       runOn(first, second) {
         within(15.seconds) {
+          var values = Set.empty[Int]
           awaitAssert {
             replicator ! Get(KeyA, ReadLocal)
             expectMsgPF() {
               case g @ GetSuccess(KeyA, _) ⇒
-                g.get(KeyA).value should be(9)
+                val value = g.get(KeyA).value.toInt
+                values += value
+                value should be(9)
                 g.get(KeyA).needPruningFrom(thirdUniqueAddress) should be(false)
             }
           }
+          values should ===(Set(9))
         }
         within(5.seconds) {
           awaitAssert {
@@ -154,10 +158,12 @@ class ReplicatorPruningSpec extends MultiNodeSpec(ReplicatorPruningSpec) with ST
       }
       enterBarrier("pruning-done")
 
-      // on one of the nodes the data has been updated by the pruning,
-      // client can update anyway
+      // after pruning performed we should not be able to update with data from removed node
       def updateAfterPruning(expectedValue: Int): Unit = {
-        replicator ! Update(KeyA, GCounter(), WriteAll(timeout), None)(_ + 1)
+        replicator ! Update(KeyA, GCounter(), WriteAll(timeout), None) { existing ⇒
+          // inject data from removed node to simulate bad data
+          existing.merge(oldCounter) + 1
+        }
         expectMsgPF() {
           case UpdateSuccess(KeyA, _) ⇒
             replicator ! Get(KeyA, ReadLocal)
@@ -165,6 +171,7 @@ class ReplicatorPruningSpec extends MultiNodeSpec(ReplicatorPruningSpec) with ST
             retrieved.value should be(expectedValue)
         }
       }
+
       runOn(first) {
         updateAfterPruning(expectedValue = 10)
       }
@@ -175,19 +182,19 @@ class ReplicatorPruningSpec extends MultiNodeSpec(ReplicatorPruningSpec) with ST
       }
       enterBarrier("update-second-after-pruning")
 
-      // after pruning performed and maxDissemination it is tombstoned
-      // and we should still not be able to update with data from removed node
+      // after full replication should still not be able to update with data from removed node
+      // but it would not work after removal of the PruningPerformed markers
       expectNoMsg(maxPruningDissemination + 3.seconds)
 
       runOn(first) {
         updateAfterPruning(expectedValue = 12)
       }
-      enterBarrier("update-first-after-tombstone")
+      enterBarrier("update-first-after-dissemination")
 
       runOn(second) {
         updateAfterPruning(expectedValue = 13)
       }
-      enterBarrier("update-second-after-tombstone")
+      enterBarrier("update-second-after-dissemination")
 
       enterBarrier("after-1")
     }

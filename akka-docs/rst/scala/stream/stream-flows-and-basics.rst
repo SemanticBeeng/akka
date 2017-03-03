@@ -23,7 +23,7 @@ Stream
   An active process that involves moving and transforming data.
 Element
   An element is the processing unit of streams. All operations transform and transfer elements from upstream to
-  downstream. Buffer sizes are always expressed as number of elements independently form the actual size of the elements.
+  downstream. Buffer sizes are always expressed as number of elements independently from the actual size of the elements.
 Back-pressure
   A means of flow-control, a way for consumers of data to notify a producer about their current availability, effectively
   slowing down the upstream producer to match their consumption speeds.
@@ -236,7 +236,7 @@ consequences:
   * starting up a stream may take longer than before due to executing the fusion algorithm
   * passing elements from one processing stage to the next is a lot faster between fused
     stages due to avoiding the asynchronous messaging overhead
-  * fused stream processing stages do no longer run in parallel to each other, meaning that
+  * fused stream processing stages no longer run in parallel to each other, meaning that
     only up to one CPU core is used for each fused part
 
 The first point can be countered by pre-fusing and then reusing a stream blueprint as sketched below:

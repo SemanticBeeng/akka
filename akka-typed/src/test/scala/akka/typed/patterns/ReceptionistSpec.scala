@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2014-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2014-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.typed.patterns
 
@@ -121,6 +121,17 @@ class ReceptionistSpec extends TypedSpec {
         }.expectMessage(1.second) {
           case (msg, s) ⇒
             msg should be(Registered(ServiceKeyA, s))
+        }
+      }
+    })
+
+    def `must be present in the system`(): Unit = sync(runTest("systemReceptionist") {
+      StepWise[Listing[ServiceA]] { (ctx, startWith) ⇒
+        val self = ctx.self
+        startWith.withKeepTraces(true) {
+          ctx.system.receptionist ! Find(ServiceKeyA)(self)
+        }.expectMessage(1.second) { (msg, _) ⇒
+          msg.addresses should ===(Set())
         }
       }
     })

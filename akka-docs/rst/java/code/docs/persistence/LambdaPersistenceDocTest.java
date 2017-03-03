@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package docs.persistence;
 
@@ -10,11 +10,11 @@ import akka.pattern.BackoffSupervisor;
 import akka.persistence.*;
 import akka.persistence.journal.EventAdapter;
 import akka.persistence.journal.EventSeq;
-import scala.Option;
 import scala.concurrent.duration.Duration;
 import scala.PartialFunction;
 import scala.runtime.BoxedUnit;
 import java.io.Serializable;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 public class LambdaPersistenceDocTest {
@@ -42,7 +42,7 @@ public class LambdaPersistenceDocTest {
 
       //#recover-on-restart-disabled
       @Override
-      public void preRestart(Throwable reason, Option<Object> message) {}
+      public void preRestart(Throwable reason, Optional<Object> message) {}
       //#recover-on-restart-disabled
     }
 
@@ -65,14 +65,14 @@ public class LambdaPersistenceDocTest {
       //#persistence-id-override
 
       @Override
-      public PartialFunction<Object, BoxedUnit> receiveCommand() {
-        return ReceiveBuilder.
+      public Receive createReceive() {
+        return receiveBuilder().
           match(String.class, cmd -> {/* ... */}).build();
       }
 
       @Override
-      public PartialFunction<Object, BoxedUnit> receiveRecover() {
-        return ReceiveBuilder.
+      public Receive createReceiveRecover() {
+        return receiveBuilder().
             match(String.class, evt -> {/* ... */}).build();
       }
 
@@ -85,8 +85,8 @@ public class LambdaPersistenceDocTest {
         return "my-stable-persistence-id";
       }
 
-      @Override public PartialFunction<Object, BoxedUnit> receiveRecover() {
-        return ReceiveBuilder.
+      @Override public Receive createReceiveRecover() {
+        return receiveBuilder().
           match(RecoveryCompleted.class, r -> {
             // perform init after recovery, before any other messages
             // ...
@@ -94,8 +94,8 @@ public class LambdaPersistenceDocTest {
           match(String.class, this::handleEvent).build();
       }
 
-      @Override public PartialFunction<Object, BoxedUnit> receiveCommand() {
-        return ReceiveBuilder.
+      @Override public Receive createReceive() {
+        return receiveBuilder().
           match(String.class, s -> s.equals("cmd"),
             s -> persist("evt", this::handleEvent)).build();
       }
@@ -108,6 +108,15 @@ public class LambdaPersistenceDocTest {
     }
     //#recovery-completed
 
+    abstract class MyPersistentActor6 extends AbstractPersistentActor {
+      //#recovery-no-snap
+      @Override
+      public Recovery recovery() {
+        return Recovery.create(SnapshotSelectionCriteria.none());
+      }
+      //#recovery-no-snap
+    }
+
     abstract class MyActor extends AbstractPersistentActor {
       //#backoff
       @Override
@@ -119,7 +128,7 @@ public class LambdaPersistenceDocTest {
           Duration.create(3, TimeUnit.SECONDS),
           Duration.create(30, TimeUnit.SECONDS),
           0.2);
-        context().actorOf(props, "mySupervisor");
+        getContext().actorOf(props, "mySupervisor");
         super.preStart();
       }
       //#backoff
@@ -179,8 +188,8 @@ public class LambdaPersistenceDocTest {
         }
 
         @Override
-        public PartialFunction<Object, BoxedUnit> receiveCommand() {
-          return ReceiveBuilder.
+        public Receive createReceive() {
+          return receiveBuilder().
             match(String.class, s -> {
               persist(new MsgSent(s), evt -> updateState(evt));
             }).
@@ -191,8 +200,8 @@ public class LambdaPersistenceDocTest {
         }
 
         @Override
-        public PartialFunction<Object, BoxedUnit> receiveRecover() {
-          return ReceiveBuilder.
+        public Receive createReceiveRecover() {
+          return receiveBuilder().
               match(Object.class, evt -> updateState(evt)).build();
         }
 
@@ -208,13 +217,14 @@ public class LambdaPersistenceDocTest {
       }
 
       class MyDestination extends AbstractActor {
-        public MyDestination() {
-          receive(ReceiveBuilder.
-            match(Msg.class, msg -> {
+        @Override
+        public Receive createReceive() {
+          return receiveBuilder()
+            .match(Msg.class, msg -> {
               // ...
               sender().tell(new Confirm(msg.deliveryId), self());
-            }).build()
-          );
+            })
+            .build();
         }
       }
       //#at-least-once-example
@@ -227,8 +237,8 @@ public class LambdaPersistenceDocTest {
       //#save-snapshot
       private Object state;
 
-      @Override public PartialFunction<Object, BoxedUnit> receiveCommand() {
-        return ReceiveBuilder.
+      @Override public Receive createReceive() {
+        return receiveBuilder().
           match(String.class, s -> s.equals("snap"),
             s -> saveSnapshot(state)).
           match(SaveSnapshotSuccess.class, ss -> {
@@ -246,8 +256,8 @@ public class LambdaPersistenceDocTest {
         return "persistence-id";
       }
 
-      @Override public PartialFunction<Object, BoxedUnit> receiveRecover() {
-        return ReceiveBuilder.
+      @Override public Receive createReceiveRecover() {
+        return receiveBuilder().
           match(RecoveryCompleted.class, r -> {/* ...*/}).build();
       }
 
@@ -270,8 +280,8 @@ public class LambdaPersistenceDocTest {
       //#snapshot-offer
       private Object state;
 
-      @Override public PartialFunction<Object, BoxedUnit> receiveRecover() {
-        return ReceiveBuilder.
+      @Override public Receive createReceiveRecover() {
+        return receiveBuilder().
           match(SnapshotOffer.class, s -> {
             state = s.snapshot();
             // ...
@@ -284,21 +294,22 @@ public class LambdaPersistenceDocTest {
         return "persistence-id";
       }
 
-      @Override public PartialFunction<Object, BoxedUnit> receiveCommand() {
-        return ReceiveBuilder.
+      @Override public Receive createReceive() {
+        return receiveBuilder().
           match(String.class, s -> {/* ...*/}).build();
       }
     }
 
 
     class MyActor extends AbstractActor {
-      ActorRef persistentActor;
+      private final ActorRef persistentActor =
+        getContext().actorOf(Props.create(MyPersistentActor.class));
 
-      public MyActor() {
-        persistentActor = context().actorOf(Props.create(MyPersistentActor.class));
-        receive(ReceiveBuilder.
-          match(Object.class, o -> {/* ... */}).build()
-        );
+        @Override
+        public Receive createReceive() {
+          return receiveBuilder()  
+            .match(Object.class, o -> {/* ... */})
+            .build();
       }
     }
   };
@@ -322,13 +333,13 @@ public class LambdaPersistenceDocTest {
         });
       }
 
-      @Override public PartialFunction<Object, BoxedUnit> receiveRecover() {
-        return ReceiveBuilder.
+      @Override public Receive createReceiveRecover() {
+        return receiveBuilder().
           match(String.class, this::handleCommand).build();
       }
 
-      @Override public PartialFunction<Object, BoxedUnit> receiveCommand() {
-        return ReceiveBuilder.
+      @Override public Receive createReceive() {
+        return receiveBuilder().
           match(String.class, this::handleCommand).build();
       }
     }
@@ -374,13 +385,13 @@ public class LambdaPersistenceDocTest {
         });
       }
 
-      @Override public PartialFunction<Object, BoxedUnit> receiveRecover() {
-        return ReceiveBuilder.
+      @Override public Receive createReceiveRecover() {
+        return receiveBuilder().
           match(String.class, this::handleCommand).build();
       }
 
-      @Override public PartialFunction<Object, BoxedUnit> receiveCommand() {
-        return ReceiveBuilder.
+      @Override public Receive createReceive() {
+        return receiveBuilder().
           match(String.class, this::handleCommand).build();
       }
     }
@@ -415,15 +426,15 @@ public class LambdaPersistenceDocTest {
         return "my-stable-persistence-id";
       }
 
-      @Override public PartialFunction<Object, BoxedUnit> receiveCommand() {
-        return ReceiveBuilder.matchAny(event -> {}).build();
+      @Override public Receive createReceive() {
+        return receiveBuilder().matchAny(event -> {}).build();
       }
 
       //#nested-persist-persist
-      @Override public PartialFunction<Object, BoxedUnit> receiveRecover() {
+      @Override public Receive createReceiveRecover() {
         final Procedure<String> replyToSender = event -> sender().tell(event, self());
 
-        return ReceiveBuilder
+        return receiveBuilder()
           .match(String.class, msg -> {
             persist(String.format("%s-outer-1", msg), event -> {
               sender().tell(event, self());
@@ -468,15 +479,17 @@ public class LambdaPersistenceDocTest {
         return "my-stable-persistence-id";
       }
 
-      @Override public PartialFunction<Object, BoxedUnit> receiveCommand() {
-        return ReceiveBuilder.matchAny(event -> {}).build();
+      @Override 
+      public Receive createReceiveRecover() {
+        return receiveBuilder().matchAny(event -> {}).build();
       }
 
       //#nested-persistAsync-persistAsync
-      @Override public PartialFunction<Object, BoxedUnit> receiveRecover() {
+      @Override 
+      public Receive createReceive() {
           final Procedure<String> replyToSender = event -> sender().tell(event, self());
 
-        return ReceiveBuilder
+        return receiveBuilder()
           .match(String.class, msg -> {
             persistAsync(String.format("%s-outer-1", msg ), event -> {
               sender().tell(event, self());
@@ -518,31 +531,6 @@ public class LambdaPersistenceDocTest {
     }
   };
 
-  static Object o12 = new Object() {
-    //#view
-    class MyView extends AbstractPersistentView {
-      @Override public String persistenceId() { return "some-persistence-id"; }
-      @Override public String viewId() { return "some-persistence-id-view"; }
-
-      public MyView() {
-        receive(ReceiveBuilder.
-          match(Object.class, p -> isPersistent(),  persistent -> {
-            // ...
-          }).build()
-        );
-      }
-    }
-    //#view
-
-    public void usage() {
-      final ActorSystem system = ActorSystem.create("example");
-      //#view-update
-      final ActorRef view = system.actorOf(Props.create(MyView.class));
-      view.tell(Update.create(true), null);
-      //#view-update
-    }
-  };
-
   static Object o14 = new Object() {
     //#safe-shutdown
     final class Shutdown {
@@ -555,10 +543,10 @@ public class LambdaPersistenceDocTest {
       }
 
       @Override
-      public PartialFunction<Object, BoxedUnit> receiveCommand() {
-        return ReceiveBuilder
+      public Receive createReceive() {
+        return receiveBuilder()
           .match(Shutdown.class, shutdown -> {
-            context().stop(self());
+            getContext().stop(self());
           })
           .match(String.class, msg -> {
             System.out.println(msg);
@@ -568,8 +556,8 @@ public class LambdaPersistenceDocTest {
       }
 
       @Override
-      public PartialFunction<Object, BoxedUnit> receiveRecover() {
-        return ReceiveBuilder.matchAny(any -> {}).build();
+      public Receive createReceiveRecover() {
+        return receiveBuilder().matchAny(any -> {}).build();
       }
 
     }

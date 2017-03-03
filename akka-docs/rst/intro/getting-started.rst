@@ -37,6 +37,12 @@ Akka is very modular and consists of several JARs containing different features.
 
 - ``akka-cluster`` – Cluster membership management, elastic routers.
 
+- ``akka-cluster-sharding`` – Cluster Sharding of actors.
+
+- ``akka-cluster-tools`` – Additoinal Cluster utilities, such as Singleton, Pub/Sub and Client.
+
+- ``akka-distributed-data`` – Cluster data with CRDTs.
+
 - ``akka-osgi`` – Utilities for using Akka in OSGi containers
 
 - ``akka-osgi-aries`` – Aries blueprint for provisioning actor systems
@@ -50,7 +56,7 @@ Akka is very modular and consists of several JARs containing different features.
 - ``akka-testkit`` – Toolkit for testing Actor systems
 
 In addition to these stable modules there are several which are on their way
-into the stable core but are still marked “experimental” at this point. This
+into the stable core but are still marked :ref:`may change <may-change>` at this point. This
 does not mean that they do not function as intended, it primarily means that
 their API has not yet solidified enough in order to be considered frozen. You
 can help accelerating this process by giving feedback on these modules on our

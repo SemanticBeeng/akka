@@ -30,10 +30,7 @@ and add the following configuration stanza to your ``application.conf``
 
    akka.extensions = [ "akka.cluster.metrics.ClusterMetricsExtension" ]
 
-Make sure to disable legacy metrics in akka-cluster: ``akka.cluster.metrics.enabled=off``,
-since it is still enabled in akka-cluster by default (for compatibility with past releases).
-
-Cluster members with status :ref:`WeaklyUp <weakly_up_java>`, if that feature is enabled,
+Cluster members with status :ref:`WeaklyUp <weakly_up_java>`,
 will participate in Cluster Metrics collection and dissemination.
 
 Metrics Collector
@@ -62,11 +59,11 @@ Metrics Events
 
 Metrics extension periodically publishes current snapshot of the cluster metrics to the node system event bus.
 
-The publication period is controlled by the ``akka.cluster.metrics.collector.sample-period`` setting.
+The publication interval is controlled by the ``akka.cluster.metrics.collector.sample-interval`` setting.
 
 The payload of the ``akka.cluster.metrics.ClusterMetricsChanged`` event will contain
 latest metrics of the node as well as other cluster member nodes metrics gossip
-which was received during the collector sample period.
+which was received during the collector sample interval.
 
 You can subscribe your metrics listener actors to these events in order to implement custom node lifecycle
 ::
@@ -128,25 +125,44 @@ Let's take a look at this router in action. What can be more demanding than calc
 
 The backend worker that performs the factorial calculation:
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-java/src/main/java/sample/cluster/factorial/FactorialBackend.java#backend
+.. includecode::  code/docs/cluster/FactorialBackend.java#backend
 
 The frontend that receives user jobs and delegates to the backends via the router:
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-java/src/main/java/sample/cluster/factorial/FactorialFrontend.java#frontend
+.. includecode:: code/docs/cluster/FactorialFrontend.java#frontend
 
 
 As you can see, the router is defined in the same way as other routers, and in this case it is configured as follows:
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-java/src/main/resources/factorial.conf#adaptive-router
+::
+
+  akka.actor.deployment {
+    /factorialFrontend/factorialBackendRouter = {
+      # Router type provided by metrics extension.
+      router = cluster-metrics-adaptive-group
+      # Router parameter specific for metrics extension.
+      # metrics-selector = heap
+      # metrics-selector = load
+      # metrics-selector = cpu
+      metrics-selector = mix
+      #
+      routees.paths = ["/user/factorialBackend"]
+      cluster {
+        enabled = on
+        use-role = backend
+        allow-local-routees = off
+      }
+    }
+  }
 
 It is only ``router`` type and the ``metrics-selector`` parameter that is specific to this router,
 other things work in the same way as other routers.
 
 The same type of router could also have been defined in code:
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-java/src/main/java/sample/cluster/factorial/Extra.java#router-lookup-in-code
+.. includecode:: code/docs/cluster/FactorialFrontend.java#router-lookup-in-code
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-java/src/main/java/sample/cluster/factorial/Extra.java#router-deploy-in-code
+.. includecode:: code/docs/cluster/FactorialFrontend.java#router-deploy-in-code
 
 The `Lightbend Activator <http://www.lightbend.com/platform/getstarted>`_ tutorial named
 `Akka Cluster Samples with Java <http://www.lightbend.com/activator/template/akka-sample-cluster-java>`_.
@@ -157,7 +173,7 @@ Subscribe to Metrics Events
 
 It is possible to subscribe to the metrics events directly to implement other functionality.
 
-.. includecode:: ../../../akka-samples/akka-sample-cluster-java/src/main/java/sample/cluster/factorial/MetricsListener.java#metrics-listener
+.. includecode:: code/docs/cluster/MetricsListener.java#metrics-listener
 
 Custom Metrics Collector
 ------------------------

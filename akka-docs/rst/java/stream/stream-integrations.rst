@@ -30,7 +30,7 @@ even though the actor will only process one message at a time because then there
 is already a message in the mailbox when the actor has completed previous
 message. 
 
-The actor must reply to the ``getSender()`` for each message from the stream. That
+The actor must reply to the ``sender()`` for each message from the stream. That
 reply will complete the ``CompletionStage`` of the ``ask`` and it will be the element that
 is emitted downstreams from ``mapAsync``.
 
@@ -437,6 +437,14 @@ These can be consumed by other Reactive Stream libraries or used as an Akka Stre
 ActorPublisher
 --------------
 
+.. warning::
+  **Deprecation warning:** ``ActorPublisher`` is deprecated in favour of the vastly more 
+  type-safe and safe to implement :class:`akka.stream.stage.GraphStage`. It can also 
+  expose a "stage actor ref" is needed to be addressed as-if an Actor. 
+  Custom stages implemented using ``GraphStage`` are also automatically fusable.
+  
+  To learn more about implementing custom stages using it refer to :ref:`graphstage-java`.
+
 Extend :class:`akka.stream.actor.AbstractActorPublisher` to implement a
 stream publisher that keeps track of the subscription life cycle and requested elements.
 
@@ -481,6 +489,14 @@ attach a ``Sink.asPublisher(AsPublisher.WITH_FANOUT)`` to enable multiple subscr
 
 ActorSubscriber
 ---------------
+
+.. warning::
+  **Deprecation warning:** ``ActorSubscriber`` is deprecated in favour of the vastly more 
+  type-safe and safe to implement :class:`akka.stream.stage.GraphStage`. It can also 
+  expose a "stage actor ref" is needed to be addressed as-if an Actor. 
+  Custom stages implemented using ``GraphStage`` are also automatically fusable.
+  
+  To learn more about implementing custom stages using it refer to :ref:`graphstage-scala`.
 
 Extend :class:`akka.stream.actor.AbstractActorSubscriber` to make your class a stream subscriber with
 full control of stream back pressure. It will receive

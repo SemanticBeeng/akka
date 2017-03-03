@@ -1,12 +1,12 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package docs.io;
 
 //#imports
 import akka.actor.ActorRef;
-import akka.actor.UntypedActor;
+import akka.actor.AbstractActor;
 import akka.event.Logging;
 import akka.event.LoggingAdapter;
 import akka.io.Inet;
@@ -57,7 +57,7 @@ public class JavaUdpMulticast {
     }
     //#multicast-group
 
-    public static class Listener extends UntypedActor {
+    public static class Listener extends AbstractActor {
         LoggingAdapter log = Logging.getLogger(getContext().system(), this);
 
         ActorRef sink;
@@ -73,26 +73,27 @@ public class JavaUdpMulticast {
             final ActorRef mgr = Udp.get(getContext().system()).getManager();
             // listen for datagrams on this address
             InetSocketAddress endpoint = new InetSocketAddress(port);
-            mgr.tell(UdpMessage.bind(getSelf(), endpoint, options), getSelf());
+            mgr.tell(UdpMessage.bind(self(), endpoint, options), self());
             //#bind
         }
 
         @Override
-        public void onReceive(Object msg) {
-            if (msg instanceof Udp.Bound) {
-                final Udp.Bound b = (Udp.Bound) msg;
-                log.info("Bound to {}", b.localAddress());
-                sink.tell(b, getSelf());
-            } else if (msg instanceof Udp.Received) {
-                final Udp.Received r = (Udp.Received) msg;
-                final String txt = r.data().decodeString("utf-8");
-                log.info("Received '{}' from {}", txt, r.sender());
-                sink.tell(txt, getSelf());
-            } else unhandled(msg);
+        public Receive createReceive() {
+            return receiveBuilder()
+                .match(Udp.Bound.class, bound -> {
+                  log.info("Bound to {}", bound.localAddress());
+                  sink.tell(bound, self());
+                })
+                .match(Udp.Received.class, received -> {
+                  final String txt = received.data().decodeString("utf-8");
+                  log.info("Received '{}' from {}", txt, received.sender());
+                  sink.tell(txt, self());
+                })
+                .build();
         }
     }
 
-    public static class Sender extends UntypedActor {
+    public static class Sender extends AbstractActor {
         LoggingAdapter log = Logging.getLogger(getContext().system(), this);
 
         String iface;
@@ -110,16 +111,18 @@ public class JavaUdpMulticast {
             options.add(new Inet6ProtocolFamily());
 
             final ActorRef mgr = Udp.get(getContext().system()).getManager();
-            mgr.tell(UdpMessage.simpleSender(options), getSelf());
+            mgr.tell(UdpMessage.simpleSender(options), self());
         }
 
         @Override
-        public void onReceive(Object msg) {
-            if (msg instanceof Udp.SimpleSenderReady) {
-                InetSocketAddress remote = new InetSocketAddress(group + "%" + iface, port);
-                log.info("Sending message to " + remote);
-                getSender().tell(UdpMessage.send(ByteString.fromString(message), remote), getSelf());
-            } else unhandled(msg);
+        public Receive createReceive() {
+            return receiveBuilder()
+                .match(Udp.SimpleSenderReady.class, x -> {
+                    InetSocketAddress remote = new InetSocketAddress(group + "%" + iface, port);
+                    log.info("Sending message to " + remote);
+                    sender().tell(UdpMessage.send(ByteString.fromString(message), remote), self());
+                })
+                .build();
         }
     }
 }

@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2016-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.remote.artery
 
@@ -33,15 +33,14 @@ import akka.remote.RemoteActorRefProvider
 import akka.remote.RemoteTransport
 import akka.remote.ThisActorSystemQuarantinedEvent
 import akka.remote.UniqueAddress
+import akka.remote.artery.AeronSource.ResourceLifecycle
 import akka.remote.artery.ArteryTransport.ShuttingDown
-import akka.remote.artery.Encoder.ChangeOutboundCompression
+import akka.remote.artery.Encoder.OutboundCompressionAccess
 import akka.remote.artery.InboundControlJunction.ControlMessageObserver
 import akka.remote.artery.InboundControlJunction.ControlMessageSubject
 import akka.remote.artery.OutboundControlJunction.OutboundControlIngress
 import akka.remote.artery.compress._
 import akka.remote.artery.compress.CompressionProtocol.CompressionMessage
-import akka.remote.transport.AkkaPduCodec
-import akka.remote.transport.AkkaPduProtobufCodec
 import akka.remote.transport.ThrottlerTransportAdapter.Blackhole
 import akka.remote.transport.ThrottlerTransportAdapter.SetThrottle
 import akka.remote.transport.ThrottlerTransportAdapter.Unthrottled
@@ -65,7 +64,9 @@ import io.aeron.exceptions.DriverTimeoutException
 import org.agrona.ErrorHandler
 import org.agrona.IoUtil
 import org.agrona.concurrent.BackoffIdleStrategy
-import akka.remote.artery.Association.OutboundStreamMatValues
+import akka.remote.artery.Decoder.InboundCompressionAccess
+import akka.remote.transport.TestTransport
+import com.typesafe.config.ConfigFactory
 
 /**
  * INTERNAL API
@@ -308,18 +309,38 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
   @volatile private[this] var aeronErrorLogTask: Cancellable = _
   @volatile private[this] var areonErrorLog: AeronErrorLog = _
 
-  @volatile private[this] var _inboundCompressions: Option[InboundCompressions] = None
-  def inboundCompressions: Option[InboundCompressions] = _inboundCompressions
+  override val log: LoggingAdapter = Logging(system, getClass.getName)
+
+  val (afrFileChannel, afrFile, flightRecorder) = initializeFlightRecorder() match {
+    case None            ⇒ (None, None, None)
+    case Some((c, f, r)) ⇒ (Some(c), Some(f), Some(r))
+  }
+
+  /**
+   * Compression tables must be created once, such that inbound lane restarts don't cause dropping of the tables.
+   * However are the InboundCompressions are owned by the Decoder stage, and any call into them must be looped through the Decoder!
+   *
+   * Use `inboundCompressionAccess` (provided by the materialized `Decoder`) to call into the compression infrastructure.
+   */
+  private[this] val _inboundCompressions = {
+    if (settings.Advanced.Compression.Enabled) {
+      val eventSink = createFlightRecorderEventSink(synchr = false)
+      new InboundCompressionsImpl(system, this, settings.Advanced.Compression, eventSink)
+    } else NoInboundCompressions
+  }
+
+  @volatile private[this] var _inboundCompressionAccess: OptionVal[InboundCompressionAccess] = OptionVal.None
+  /** Only access compression tables via the CompressionAccess */
+  def inboundCompressionAccess: OptionVal[InboundCompressionAccess] = _inboundCompressionAccess
 
   def bindAddress: UniqueAddress = _bindAddress
   override def localAddress: UniqueAddress = _localAddress
   override def defaultAddress: Address = localAddress.address
   override def addresses: Set[Address] = _addresses
   override def localAddressForRemote(remote: Address): Address = defaultAddress
-  override val log: LoggingAdapter = Logging(system, getClass.getName)
 
-  private val codec: AkkaPduCodec = AkkaPduProtobufCodec
   private val killSwitch: SharedKillSwitch = KillSwitches.shared("transportKillSwitch")
+
   // keyed by the streamId
   private[this] val streamMatValues = new AtomicReference(Map.empty[Int, InboundStreamMatValues])
   private[this] val hasBeenShutdown = new AtomicBoolean(false)
@@ -329,8 +350,9 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
   private val inboundLanes = settings.Advanced.InboundLanes
 
   // TODO use WildcardIndex.isEmpty when merged from master
-  val largeMessageChannelEnabled =
-    !settings.LargeMessageDestinations.wildcardTree.isEmpty || !settings.LargeMessageDestinations.doubleWildcardTree.isEmpty
+  val largeMessageChannelEnabled: Boolean =
+    !settings.LargeMessageDestinations.wildcardTree.isEmpty ||
+      !settings.LargeMessageDestinations.doubleWildcardTree.isEmpty
 
   private val priorityMessageDestinations =
     WildcardIndex[NotUsed]()
@@ -360,10 +382,8 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
   private val outboundEnvelopePool = ReusableOutboundEnvelope.createObjectPool(capacity =
     settings.Advanced.OutboundMessageQueueSize * settings.Advanced.OutboundLanes * 3)
 
-  val (afrFileChannel, afrFile, flightRecorder) = initializeFlightRecorder() match {
-    case None            ⇒ (None, None, None)
-    case Some((c, f, r)) ⇒ (Some(c), Some(f), Some(r))
-  }
+  private val topLevelFREvents =
+    createFlightRecorderEventSink(synchr = true)
 
   def createFlightRecorderEventSink(synchr: Boolean = false): EventSink = {
     flightRecorder match {
@@ -375,9 +395,6 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
         IgnoreEventSink
     }
   }
-
-  private val topLevelFREvents =
-    createFlightRecorderEventSink(synchr = true)
 
   private val associationRegistry = new AssociationRegistry(
     remoteAddress ⇒ new Association(
@@ -442,8 +459,15 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
   private lazy val shutdownHook = new Thread {
     override def run(): Unit = {
       if (hasBeenShutdown.compareAndSet(false, true)) {
-        log.debug("Shutting down [{}] via shutdownHook", localAddress)
-        Await.result(internalShutdown(), 20.seconds)
+        val coord = CoordinatedShutdown(system)
+        val totalTimeout = coord.totalTimeout()
+        if (!coord.jvmHooksLatch.await(totalTimeout.toMillis, TimeUnit.MILLISECONDS))
+          log.warning(
+            "CoordinatedShutdown took longer than [{}]. Shutting down [{}] via shutdownHook",
+            totalTimeout, localAddress)
+        else
+          log.debug("Shutting down [{}] via shutdownHook", localAddress)
+        Await.result(internalShutdown(), settings.Advanced.DriverTimeout + 3.seconds)
       }
     }
   }
@@ -594,23 +618,20 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
   }
 
   private def runInboundStreams(): Unit = {
-    val noCompressions = NoInboundCompressions // TODO possibly enable on other channels too https://github.com/akka/akka/pull/20546/files#r68074082
-    val compressions = createInboundCompressions(this)
-    _inboundCompressions = Some(compressions)
+    runInboundControlStream()
+    runInboundOrdinaryMessagesStream()
 
-    runInboundControlStream(noCompressions) // TODO should understand compressions too
-    runInboundOrdinaryMessagesStream(compressions)
     if (largeMessageChannelEnabled) {
       runInboundLargeMessagesStream()
     }
   }
 
-  private def runInboundControlStream(compression: InboundCompressions): Unit = {
+  private def runInboundControlStream(): Unit = {
     if (isShutdown) throw ShuttingDown
-    val (resourceLife, (ctrl, completed)) =
+    val (resourceLife, ctrl, completed) =
       aeronSource(controlStreamId, envelopeBufferPool)
-        .via(inboundFlow(compression))
-        .toMat(inboundControlSink)(Keep.both)
+        .via(inboundFlow(settings, NoInboundCompressions))
+        .toMat(inboundControlSink)({ case (a, (c, d)) ⇒ (a, c, d) })
         .run()(controlMaterializer)
 
     controlSubject = ctrl
@@ -639,8 +660,14 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
                       "Discarding incoming ActorRef compression advertisement from [{}] that was " +
                         "prepared for another incarnation with uid [{}] than current uid [{}], table: [{}]",
                       from, table.originUid, localAddress.uid, table)
-                case ActorRefCompressionAdvertisementAck(from, tableVersion) ⇒
-                  _inboundCompressions.foreach(_.confirmActorRefCompressionAdvertisement(from.uid, tableVersion))
+                case ack: ActorRefCompressionAdvertisementAck ⇒
+                  inboundCompressionAccess match {
+                    case OptionVal.Some(access) ⇒ access.confirmActorRefCompressionAdvertisementAck(ack)
+                    case _ ⇒
+                      log.debug(s"Received {} version: [{}] however no inbound compression access was present. " +
+                        s"ACK will not take effect, however it will be redelivered and likely to apply then.", Logging.simpleName(ack), ack.tableVersion)
+                  }
+
                 case ClassManifestCompressionAdvertisement(from, table) ⇒
                   if (table.originUid == localAddress.uid) {
                     log.debug("Incoming Class Manifest compression advertisement from [{}], table: [{}]", from, table)
@@ -658,8 +685,13 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
                       "Discarding incoming Class Manifest compression advertisement from [{}] that was " +
                         "prepared for another incarnation with uid [{}] than current uid [{}], table: [{}]",
                       from, table.originUid, localAddress.uid, table)
-                case ClassManifestCompressionAdvertisementAck(from, tableVersion) ⇒
-                  inboundCompressions.foreach(_.confirmClassManifestCompressionAdvertisement(from.uid, tableVersion))
+                case ack: ClassManifestCompressionAdvertisementAck ⇒
+                  inboundCompressionAccess match {
+                    case OptionVal.Some(access) ⇒ access.confirmClassManifestCompressionAdvertisementAck(ack)
+                    case _ ⇒
+                      log.debug(s"Received {} version: [{}] however no inbound compression access was present. " +
+                        s"ACK will not take effect, however it will be redelivered and likely to apply then.", Logging.simpleName(ack), ack.tableVersion)
+                  }
               }
 
             case Quarantined(from, to) if to == localAddress ⇒
@@ -679,49 +711,49 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
     })
 
     updateStreamMatValues(controlStreamId, resourceLife, completed)
-    attachStreamRestart("Inbound control stream", completed, () ⇒ runInboundControlStream(compression))
+    attachStreamRestart("Inbound control stream", completed, () ⇒ runInboundControlStream())
   }
 
-  private def runInboundOrdinaryMessagesStream(compression: InboundCompressions): Unit = {
+  private def runInboundOrdinaryMessagesStream(): Unit = {
     if (isShutdown) throw ShuttingDown
-    val (resourceLife, completed) =
+
+    val (resourceLife, inboundCompressionAccesses, completed) =
       if (inboundLanes == 1) {
         aeronSource(ordinaryStreamId, envelopeBufferPool)
-          .via(inboundFlow(compression))
-          .toMat(inboundSink(envelopeBufferPool))(Keep.both)
+          .viaMat(inboundFlow(settings, _inboundCompressions))(Keep.both)
+          .toMat(inboundSink(envelopeBufferPool))({ case ((a, b), c) ⇒ (a, b, c) })
           .run()(materializer)
 
       } else {
         val hubKillSwitch = KillSwitches.shared("hubKillSwitch")
-        val source = aeronSource(ordinaryStreamId, envelopeBufferPool)
-          .via(hubKillSwitch.flow)
-          .via(inboundFlow(compression))
-          .map(env ⇒ (env.recipient, env))
+        val source: Source[(OptionVal[InternalActorRef], InboundEnvelope), (ResourceLifecycle, InboundCompressionAccess)] =
+          aeronSource(ordinaryStreamId, envelopeBufferPool)
+            .via(hubKillSwitch.flow)
+            .viaMat(inboundFlow(settings, _inboundCompressions))(Keep.both)
+            .map(env ⇒ (env.recipient, env))
 
-        val (resourceLife, broadcastHub) =
+        val (resourceLife, compressionAccess, broadcastHub) =
           source
-            .toMat(BroadcastHub.sink(bufferSize = settings.Advanced.InboundBroadcastHubBufferSize))(Keep.both)
+            .toMat(BroadcastHub.sink(bufferSize = settings.Advanced.InboundBroadcastHubBufferSize))({ case ((a, b), c) ⇒ (a, b, c) })
             .run()(materializer)
 
-        val lane = inboundSink(envelopeBufferPool)
-
         // select lane based on destination, to preserve message order
-        val partitionFun: OptionVal[ActorRef] ⇒ Int = {
-          _ match {
-            case OptionVal.Some(r) ⇒ math.abs(r.path.uid) % inboundLanes
-            case OptionVal.None    ⇒ 0
+        def shouldUseLane(recipient: OptionVal[ActorRef], targetLane: Int): Boolean =
+          recipient match {
+            case OptionVal.Some(r) ⇒ math.abs(r.path.uid) % inboundLanes == targetLane
+            case OptionVal.None    ⇒ 0 == targetLane
           }
-        }
 
+        val lane = inboundSink(envelopeBufferPool)
         val completedValues: Vector[Future[Done]] =
-          (0 until inboundLanes).map { i ⇒
-            broadcastHub.runWith(
+          (0 until inboundLanes).map { laneId ⇒
+            broadcastHub
               // TODO replace filter with "PartitionHub" when that is implemented
-              // must use a tuple here because envelope is pooled and must only be touched in the selected lane
-              Flow[(OptionVal[ActorRef], InboundEnvelope)].collect {
-                case (recipient, env) if partitionFun(recipient) == i ⇒ env
-              }
-                .toMat(lane)(Keep.right))(materializer)
+              // must use a tuple here because envelope is pooled and must only be read in the selected lane
+              // otherwise, the lane that actually processes it might have already released it.
+              .collect { case (recipient, env) if shouldUseLane(recipient, laneId) ⇒ env }
+              .toMat(lane)(Keep.right)
+              .run()(materializer)
           }(collection.breakOut)
 
         import system.dispatcher
@@ -733,19 +765,20 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
           case reason: Throwable ⇒ hubKillSwitch.abort(reason)
         }
 
-        (resourceLife, completed)
+        (resourceLife, compressionAccess, completed)
       }
 
+    _inboundCompressionAccess = OptionVal(inboundCompressionAccesses)
+
     updateStreamMatValues(ordinaryStreamId, resourceLife, completed)
-    attachStreamRestart("Inbound message stream", completed, () ⇒ runInboundOrdinaryMessagesStream(compression))
+    attachStreamRestart("Inbound message stream", completed, () ⇒ runInboundOrdinaryMessagesStream())
   }
 
   private def runInboundLargeMessagesStream(): Unit = {
     if (isShutdown) throw ShuttingDown
-    val disableCompression = NoInboundCompressions // no compression on large message stream for now
 
     val (resourceLife, completed) = aeronSource(largeStreamId, largeEnvelopeBufferPool)
-      .via(inboundLargeFlow(disableCompression))
+      .via(inboundLargeFlow(settings))
       .toMat(inboundSink(largeEnvelopeBufferPool))(Keep.both)
       .run()(materializer)
 
@@ -763,8 +796,6 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
         log.error(cause, s"{} failed after shutdown. {}", streamName, cause.getMessage)
       case _: AbruptTerminationException ⇒ // ActorSystem shutdown
       case cause ⇒
-        _inboundCompressions.foreach(_.close())
-        _inboundCompressions = None
         if (restartCounter.restart()) {
           log.error(cause, "{} failed. Restarting it. {}", streamName, cause.getMessage)
           restart()
@@ -806,8 +837,8 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
     } yield {
       topLevelFREvents.loFreq(Transport_Stopped, NoMetaData)
 
-      _inboundCompressions.foreach(_.close())
-      _inboundCompressions = None
+      // no need to explicitly shut down the contained access since it's lifecycle is bound to the Decoder
+      _inboundCompressionAccess = OptionVal.None
 
       if (aeronErrorLogTask != null) {
         aeronErrorLogTask.cancel()
@@ -862,6 +893,8 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
         testState.blackhole(localAddress.address, address, direction)
       case SetThrottle(address, direction, Unthrottled) ⇒
         testState.passThrough(localAddress.address, address, direction)
+      case TestManagementCommands.FailInboundStreamOnce(ex) ⇒
+        testState.failInboundStreamOnce(ex)
     }
     Future.successful(true)
   }
@@ -922,11 +955,11 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
     createOutboundSink(largeStreamId, outboundContext, largeEnvelopeBufferPool)
       .mapMaterializedValue { case (_, d) ⇒ d }
 
-  def outbound(outboundContext: OutboundContext): Sink[OutboundEnvelope, (ChangeOutboundCompression, Future[Done])] =
+  def outbound(outboundContext: OutboundContext): Sink[OutboundEnvelope, (OutboundCompressionAccess, Future[Done])] =
     createOutboundSink(ordinaryStreamId, outboundContext, envelopeBufferPool)
 
   private def createOutboundSink(streamId: Int, outboundContext: OutboundContext,
-                                 bufferPool: EnvelopeBufferPool): Sink[OutboundEnvelope, (ChangeOutboundCompression, Future[Done])] = {
+                                 bufferPool: EnvelopeBufferPool): Sink[OutboundEnvelope, (OutboundCompressionAccess, Future[Done])] = {
 
     outboundLane(outboundContext, bufferPool)
       .toMat(aeronSink(outboundContext, streamId))(Keep.both)
@@ -943,12 +976,12 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
       envelopeBufferPool, giveUpAfter, createFlightRecorderEventSink()))
   }
 
-  def outboundLane(outboundContext: OutboundContext): Flow[OutboundEnvelope, EnvelopeBuffer, ChangeOutboundCompression] =
+  def outboundLane(outboundContext: OutboundContext): Flow[OutboundEnvelope, EnvelopeBuffer, OutboundCompressionAccess] =
     outboundLane(outboundContext, envelopeBufferPool)
 
   private def outboundLane(
     outboundContext: OutboundContext,
-    bufferPool:      EnvelopeBufferPool): Flow[OutboundEnvelope, EnvelopeBuffer, ChangeOutboundCompression] = {
+    bufferPool:      EnvelopeBufferPool): Flow[OutboundEnvelope, EnvelopeBuffer, OutboundCompressionAccess] = {
 
     Flow.fromGraph(killSwitch.flow[OutboundEnvelope])
       .via(new OutboundHandshake(system, outboundContext, outboundEnvelopePool, settings.Advanced.HandshakeTimeout,
@@ -973,32 +1006,28 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
     // TODO we can also add scrubbing stage that would collapse sys msg acks/nacks and remove duplicate Quarantine messages
   }
 
-  private def createInboundCompressions(inboundContext: InboundContext): InboundCompressions =
-    new InboundCompressionsImpl(system, inboundContext, settings.Advanced.Compression)
-
-  def createEncoder(pool: EnvelopeBufferPool): Flow[OutboundEnvelope, EnvelopeBuffer, ChangeOutboundCompression] =
+  def createEncoder(pool: EnvelopeBufferPool): Flow[OutboundEnvelope, EnvelopeBuffer, OutboundCompressionAccess] =
     Flow.fromGraph(new Encoder(localAddress, system, outboundEnvelopePool, pool, settings.LogSend))
 
   def aeronSource(streamId: Int, pool: EnvelopeBufferPool): Source[EnvelopeBuffer, AeronSource.ResourceLifecycle] =
     Source.fromGraph(new AeronSource(inboundChannel, streamId, aeron, taskRunner, pool,
-      createFlightRecorderEventSink()))
+      createFlightRecorderEventSink(), aeronSourceSpinningStrategy))
+
+  private def aeronSourceSpinningStrategy: Int =
+    if (settings.Advanced.InboundLanes > 1 || // spinning was identified to be the cause of massive slowdowns with multiple lanes, see #21365
+      settings.Advanced.IdleCpuLevel < 5) 0 // also don't spin for small IdleCpuLevels
+    else 50 * settings.Advanced.IdleCpuLevel - 240
 
   val messageDispatcherSink: Sink[InboundEnvelope, Future[Done]] = Sink.foreach[InboundEnvelope] { m ⇒
-    val originAddress = m.association match {
-      case OptionVal.Some(a) ⇒ OptionVal.Some(a.remoteAddress)
-      case OptionVal.None    ⇒ OptionVal.None
-    }
-    messageDispatcher.dispatch(m.recipient.get, m.message, m.sender, originAddress)
+    messageDispatcher.dispatch(m)
     m match {
       case r: ReusableInboundEnvelope ⇒ inboundEnvelopePool.release(r)
       case _                          ⇒
     }
   }
 
-  def createDecoder(compression: InboundCompressions, bufferPool: EnvelopeBufferPool): Flow[EnvelopeBuffer, InboundEnvelope, NotUsed] = {
-    Flow.fromGraph(new Decoder(this, system, localAddress, compression, bufferPool,
-      inboundEnvelopePool))
-  }
+  def createDecoder(settings: ArterySettings, compressions: InboundCompressions, bufferPool: EnvelopeBufferPool): Flow[EnvelopeBuffer, InboundEnvelope, InboundCompressionAccess] =
+    Flow.fromGraph(new Decoder(this, system, localAddress, settings, bufferPool, compressions, inboundEnvelopePool))
 
   def createDeserializer(bufferPool: EnvelopeBufferPool): Flow[InboundEnvelope, InboundEnvelope, NotUsed] =
     Flow.fromGraph(new Deserializer(this, system, bufferPool))
@@ -1029,16 +1058,17 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
       .via(new InboundQuarantineCheck(this))
       .toMat(messageDispatcherSink)(Keep.right)
 
-  def inboundFlow(compression: InboundCompressions): Flow[EnvelopeBuffer, InboundEnvelope, NotUsed] = {
+  def inboundFlow(settings: ArterySettings, compressions: InboundCompressions): Flow[EnvelopeBuffer, InboundEnvelope, InboundCompressionAccess] = {
     Flow[EnvelopeBuffer]
       .via(killSwitch.flow)
-      .via(createDecoder(compression, envelopeBufferPool))
+      .viaMat(createDecoder(settings, compressions, envelopeBufferPool))(Keep.right)
   }
 
-  def inboundLargeFlow(compression: InboundCompressions): Flow[EnvelopeBuffer, InboundEnvelope, NotUsed] = {
+  // large messages flow does not use compressions, since the message size dominates the size anyway
+  def inboundLargeFlow(settings: ArterySettings): Flow[EnvelopeBuffer, InboundEnvelope, NotUsed] = {
     Flow[EnvelopeBuffer]
       .via(killSwitch.flow)
-      .via(createDecoder(compression, largeEnvelopeBufferPool))
+      .via(createDecoder(settings, NoInboundCompressions, largeEnvelopeBufferPool))
   }
 
   def inboundControlSink: Sink[InboundEnvelope, (ControlMessageSubject, Future[Done])] = {
@@ -1069,8 +1099,8 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
 
   /** INTERNAL API: for testing only. */
   private[remote] def triggerCompressionAdvertisements(actorRef: Boolean, manifest: Boolean) = {
-    _inboundCompressions.foreach {
-      case c: InboundCompressionsImpl if actorRef || manifest ⇒
+    inboundCompressionAccess match {
+      case OptionVal.Some(c) if actorRef || manifest ⇒
         log.info("Triggering compression table advertisement for {}", c)
         if (actorRef) c.runNextActorRefAdvertisement()
         if (manifest) c.runNextClassManifestAdvertisement()

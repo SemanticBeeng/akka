@@ -1,9 +1,7 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.cluster.protobuf
-
-// TODO remove metrics
 
 import akka.cluster._
 import akka.actor.{ ExtendedActorSystem, Address }
@@ -43,9 +41,9 @@ class ClusterMessageSerializerSpec extends AkkaSpec(
 
     "be serializable" in {
       val address = Address("akka.tcp", "system", "some.host.org", 4711)
-      val uniqueAddress = UniqueAddress(address, 17)
+      val uniqueAddress = UniqueAddress(address, 17L)
       val address2 = Address("akka.tcp", "system", "other.host.org", 4711)
-      val uniqueAddress2 = UniqueAddress(address2, 18)
+      val uniqueAddress2 = UniqueAddress(address2, 18L)
       checkSerialization(InternalClusterAction.Join(uniqueAddress, Set("foo", "bar")))
       checkSerialization(ClusterUserAction.Leave(address))
       checkSerialization(ClusterUserAction.Down(address))
@@ -54,6 +52,7 @@ class ClusterMessageSerializerSpec extends AkkaSpec(
       checkSerialization(InternalClusterAction.InitJoinNack(address))
       checkSerialization(ClusterHeartbeatSender.Heartbeat(address))
       checkSerialization(ClusterHeartbeatSender.HeartbeatRsp(uniqueAddress))
+      checkSerialization(InternalClusterAction.ExitingConfirmed(uniqueAddress))
 
       val node1 = VectorClock.Node("node1")
       val node2 = VectorClock.Node("node2")
@@ -72,17 +71,6 @@ class ClusterMessageSerializerSpec extends AkkaSpec(
       checkSerialization(GossipStatus(a1.uniqueAddress, g3.version))
 
       checkSerialization(InternalClusterAction.Welcome(uniqueAddress, g2))
-
-      val mg = MetricsGossip(Set(
-        NodeMetrics(a1.address, 4711, Set(Metric("foo", 1.2, None))),
-        NodeMetrics(b1.address, 4712, Set(
-          Metric("foo", 2.1, Some(EWMA(value = 100.0, alpha = 0.18))),
-          Metric("bar1", Double.MinPositiveValue, None),
-          Metric("bar2", Float.MaxValue, None),
-          Metric("bar3", Int.MaxValue, None),
-          Metric("bar4", Long.MaxValue, None),
-          Metric("bar5", BigInt(Long.MaxValue), None)))))
-      checkSerialization(MetricsGossipEnvelope(a1.address, mg, true))
     }
   }
 }

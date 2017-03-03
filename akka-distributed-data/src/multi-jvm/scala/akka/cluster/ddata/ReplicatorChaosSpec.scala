@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.cluster.ddata
 
@@ -82,7 +82,7 @@ class ReplicatorChaosSpec extends MultiNodeSpec(ReplicatorChaosSpec) with STMult
     within(5.seconds) {
       awaitAssert {
         replicator ! Get(key, ReadLocal)
-        expectMsg(DataDeleted(key))
+        expectMsg(DataDeleted(key, None))
       }
     }
 
@@ -141,7 +141,7 @@ class ReplicatorChaosSpec extends MultiNodeSpec(ReplicatorChaosSpec) with STMult
         replicator ! Update(KeyX, GCounter(), WriteTo(2, timeout))(_ + 50)
         expectMsg(UpdateSuccess(KeyX, None))
         replicator ! Delete(KeyX, WriteLocal)
-        expectMsg(DeleteSuccess(KeyX))
+        expectMsg(DeleteSuccess(KeyX, None))
       }
 
       enterBarrier("initial-updates-done")

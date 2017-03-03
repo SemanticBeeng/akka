@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.cluster.pubsub
 
@@ -29,6 +29,7 @@ object DistributedPubSubMediatorSpec extends MultiNodeConfig {
   commonConfig(ConfigFactory.parseString("""
     akka.loglevel = INFO
     akka.actor.provider = "cluster"
+    akka.actor.serialize-messages = off
     akka.remote.log-remote-lifecycle-events = off
     akka.cluster.auto-down-unreachable-after = 0s
     akka.cluster.pub-sub.max-delta-elements = 500
@@ -85,7 +86,7 @@ object DistributedPubSubMediatorSpec extends MultiNodeConfig {
       case s: String ⇒
         log.info("Got {}", s)
       case SubscribeAck(Subscribe("content", None, `self`)) ⇒
-        log.info("subscribing");
+        log.info("subscribing")
     }
   }
   //#subscriber

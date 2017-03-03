@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2014-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2014-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.contrib.circuitbreaker
 
@@ -15,6 +15,7 @@ import scala.util.{ Failure, Success }
  * This is an Actor which implements the circuit breaker pattern,
  * you may also be interested in the raw circuit breaker [[akka.pattern.CircuitBreaker]]
  */
+@deprecated("Use akka.pattern.CircuitBreaker + ask instead", "2.5.0")
 object CircuitBreakerProxy {
 
   /**
@@ -33,9 +34,9 @@ object CircuitBreakerProxy {
    * @param callTimeout          timeout before considering the ongoing call a failure
    * @param resetTimeout         time after which the channel will be closed after entering the open state
    * @param circuitEventListener an actor that will receive a series of messages of type
-   *                             [[akka.contrib.circuitbreaker.CircuitBreakerProxy.CircuitBreakerEvent]]
-   * @param failureDetector      function to detect if the a message received from the target actor as
-   *                             response from a request represent a failure
+   *                             [[akka.contrib.circuitbreaker.CircuitBreakerProxy.CircuitBreakerEvent]] (optional)
+   * @param failureDetector      function to detect if a message received from the target actor as a
+   *                             response from the request represents a failure
    * @param failureMap           function to map a failure into a response message. The failing response message is wrapped
    *                             into a [[akka.contrib.circuitbreaker.CircuitBreakerProxy.CircuitOpenFailure]] object
    */
@@ -100,6 +101,7 @@ object CircuitBreakerProxy {
 
 import akka.contrib.circuitbreaker.CircuitBreakerProxy._
 
+@deprecated("Use akka.pattern.CircuitBreaker + ask instead", "2.5.0")
 final class CircuitBreakerProxy(
   target:               ActorRef,
   maxFailures:          Int,

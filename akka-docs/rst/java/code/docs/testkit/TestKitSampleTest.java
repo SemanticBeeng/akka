@@ -1,9 +1,10 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package docs.testkit;
 
 //#fullsample
+import docs.AbstractJavaTest;
 import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.BeforeClass;
@@ -12,25 +13,27 @@ import org.junit.Test;
 import akka.actor.ActorRef;
 import akka.actor.ActorSystem;
 import akka.actor.Props;
-import akka.actor.UntypedActor;
+import akka.actor.AbstractActor;
 import akka.testkit.JavaTestKit;
 import scala.concurrent.duration.Duration;
 
-public class TestKitSampleTest {
+public class TestKitSampleTest extends AbstractJavaTest {
   
-  public static class SomeActor extends UntypedActor {
+  public static class SomeActor extends AbstractActor {
     ActorRef target = null;
-    
-    public void onReceive(Object msg) {
-    
-      if (msg.equals("hello")) {
-        getSender().tell("world", getSelf());
-        if (target != null) target.forward(msg, getContext());
-      
-      } else if (msg instanceof ActorRef) {
-        target = (ActorRef) msg;
-        getSender().tell("done", getSelf());
-      }
+
+    @Override
+    public Receive createReceive() {
+      return receiveBuilder()
+        .matchEquals("hello", message -> {
+          sender().tell("world", self());
+          if (target != null) target.forward(message, getContext());
+        })
+        .match(ActorRef.class, actorRef -> {
+          target = actorRef;
+          sender().tell("done", self());
+        })
+        .build();
     }
   }
   

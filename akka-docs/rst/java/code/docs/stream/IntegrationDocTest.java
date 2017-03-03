@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2015-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package docs.stream;
@@ -255,13 +255,18 @@ public class IntegrationDocTest extends AbstractJavaTest {
   static class DatabaseService extends AbstractActor {
     public final ActorRef probe;
 
-    DatabaseService(ActorRef probe) {
+    public DatabaseService(ActorRef probe) {
       this.probe = probe;
-
-      receive(ReceiveBuilder.match(Save.class, s -> {
-        probe.tell(s.tweet.author.handle, ActorRef.noSender());
-        sender().tell(SaveDone.INSTANCE, self());
-      }).build());
+    }
+    
+    @Override
+    public Receive createReceive() {
+      return receiveBuilder()
+        .match(Save.class, s -> {
+          probe.tell(s.tweet.author.handle, ActorRef.noSender());
+          sender().tell(SaveDone.INSTANCE, self());
+        })
+        .build();
     }
   }
 
@@ -290,18 +295,17 @@ public class IntegrationDocTest extends AbstractJavaTest {
   //#sometimes-slow-service
   
   //#ask-actor
-  static class Translator extends UntypedActor {
+  static class Translator extends AbstractActor {
     @Override
-    public void onReceive(Object message) {
-      if (message instanceof String) {
-        String word = (String) message;
-        // ... process message
-        String reply = word.toUpperCase();
-        // reply to the ask
-        getSender().tell(reply, getSelf());
-      } else {
-        unhandled(message);
-      }
+    public Receive createReceive() {
+      return receiveBuilder()
+        .match(String.class, word -> {
+          // ... process message
+          String reply = word.toUpperCase();
+          // reply to the ask
+          sender().tell(reply, self());
+        })
+        .build();
     }
   }
   //#ask-actor

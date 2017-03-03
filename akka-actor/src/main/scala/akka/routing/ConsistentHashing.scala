@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.routing
 
@@ -267,7 +267,7 @@ final case class ConsistentHashingRoutingLogic(
  */
 @SerialVersionUID(1L)
 final case class ConsistentHashingPool(
-  override val nrOfInstances:      Int,
+  val nrOfInstances:               Int,
   override val resizer:            Option[Resizer]                               = None,
   val virtualNodesFactor:          Int                                           = 0,
   val hashMapping:                 ConsistentHashingRouter.ConsistentHashMapping = ConsistentHashingRouter.emptyConsistentHashMapping,
@@ -355,7 +355,7 @@ final case class ConsistentHashingPool(
  */
 @SerialVersionUID(1L)
 final case class ConsistentHashingGroup(
-  override val paths:            immutable.Iterable[String],
+  val paths:                     immutable.Iterable[String],
   val virtualNodesFactor:        Int                                           = 0,
   val hashMapping:               ConsistentHashingRouter.ConsistentHashMapping = ConsistentHashingRouter.emptyConsistentHashMapping,
   override val routerDispatcher: String                                        = Dispatchers.DefaultDispatcherId)

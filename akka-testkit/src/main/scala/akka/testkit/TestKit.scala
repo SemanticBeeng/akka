@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.testkit
 
@@ -54,8 +54,8 @@ object TestActor {
   }
   final case class RealMessage(msg: AnyRef, sender: ActorRef) extends Message
   case object NullMessage extends Message {
-    override def msg: AnyRef = throw new IllegalActorStateException("last receive did not dequeue a message")
-    override def sender: ActorRef = throw new IllegalActorStateException("last receive did not dequeue a message")
+    override def msg: AnyRef = throw IllegalActorStateException("last receive did not dequeue a message")
+    override def sender: ActorRef = throw IllegalActorStateException("last receive did not dequeue a message")
   }
 
   val FALSE = (x: Any) ⇒ false
@@ -77,11 +77,11 @@ object TestActor {
     }
 
     override def processFailure(context: ActorContext, restart: Boolean, child: ActorRef, cause: Throwable, stats: ChildRestartStats, children: Iterable[ChildRestartStats]): Unit = {
-      delegates(child).processFailure(context, restart, child, cause, stats, children)
+      delegate(child).processFailure(context, restart, child, cause, stats, children)
     }
 
     override def handleFailure(context: ActorContext, child: ActorRef, cause: Throwable, stats: ChildRestartStats, children: Iterable[ChildRestartStats]): Boolean = {
-      delegates(child).handleFailure(context, child, cause, stats, children)
+      delegate(child).handleFailure(context, child, cause, stats, children)
     }
   }
 
@@ -435,6 +435,21 @@ trait TestKitBase {
       assert(o ne null, s"timeout (${_max}) during fishForMessage, hint: $hint")
       assert(f.isDefinedAt(o), s"fishForMessage($hint) found unexpected message $o")
       if (f(o)) o else recv
+    }
+    recv
+  }
+
+  /**
+   * Same as `fishForMessage`, but gets a different partial function and returns properly typed message.
+   */
+  def fishForSpecificMessage[T](max: Duration = Duration.Undefined, hint: String = "")(f: PartialFunction[Any, T]): T = {
+    val _max = remainingOrDilated(max)
+    val end = now + _max
+    @tailrec
+    def recv: T = {
+      val o = receiveOne(end - now)
+      assert(o ne null, s"timeout (${_max}) during fishForSpecificMessage, hint: $hint")
+      if (f.isDefinedAt(o)) f(o) else recv
     }
     recv
   }

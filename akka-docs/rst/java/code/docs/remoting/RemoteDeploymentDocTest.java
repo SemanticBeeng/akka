@@ -1,9 +1,10 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package docs.remoting;
 
 import akka.testkit.AkkaJUnitActorSystemResource;
+import docs.AbstractJavaTest;
 import org.junit.ClassRule;
 import org.junit.Test;
 
@@ -19,13 +20,16 @@ import akka.actor.ActorSystem;
 import akka.remote.RemoteScope;
 //#import
 
-import akka.actor.UntypedActor;
+import akka.actor.AbstractActor;
 
-public class RemoteDeploymentDocTest {
+public class RemoteDeploymentDocTest extends AbstractJavaTest {
 
-  public static class SampleActor extends UntypedActor {
-    public void onReceive(Object message) {
-      getSender().tell(getSelf(), getSelf());
+  public static class SampleActor extends AbstractActor {
+    @Override
+    public Receive createReceive() {
+      return receiveBuilder()
+        .matchAny(message -> sender().tell(self(), self()))
+        .build();
     }
   }
 

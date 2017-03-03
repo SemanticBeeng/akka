@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package docs.jrouting;
 
@@ -28,7 +28,7 @@ import akka.actor.ActorRef;
 import akka.actor.ActorSystem;
 import akka.actor.Props;
 //#imports1
-import akka.actor.UntypedActor;
+import akka.actor.AbstractActor;
 
 import java.io.Serializable;
 import java.util.ArrayList;
@@ -94,9 +94,14 @@ public class CustomRouterDocTest extends AbstractJavaTest {
 
   //#unit-test-logic
   
-  static public class Storage extends UntypedActor {
-    public void onReceive(Object msg) {
-      getSender().tell(msg, getSelf());
+  static public class Storage extends AbstractActor {
+    @Override
+    public Receive createReceive() {
+      return receiveBuilder()
+        .matchAny(message -> {
+          sender().tell(message, self());
+        })
+        .build();
     }
   }
   

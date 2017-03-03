@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2014-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2014-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.stream.testkit
 
@@ -126,6 +126,29 @@ object TestPublisher {
       probe.expectMsgPF[T]()(f.asInstanceOf[PartialFunction[Any, T]])
 
     def getPublisher: Publisher[I] = this
+
+    /**
+     * Execute code block while bounding its execution time between `min` and
+     * `max`. `within` blocks may be nested. All methods in this trait which
+     * take maximum wait times are available in a version which implicitly uses
+     * the remaining time governed by the innermost enclosing `within` block.
+     *
+     * Note that the timeout is scaled using Duration.dilated, which uses the
+     * configuration entry "akka.test.timefactor", while the min Duration is not.
+     *
+     * {{{
+     * val ret = within(50 millis) {
+     *   test ! "ping"
+     *   expectMsgClass(classOf[String])
+     * }
+     * }}}
+     */
+    def within[T](min: FiniteDuration, max: FiniteDuration)(f: ⇒ T): T = probe.within(min, max)(f)
+
+    /**
+     * Same as calling `within(0 seconds, max)(f)`.
+     */
+    def within[T](max: FiniteDuration)(f: ⇒ T): T = probe.within(max)(f)
   }
 
   /**
@@ -528,23 +551,46 @@ object TestSubscriber {
       self
     }
 
-    def expectNextPF[T](f: PartialFunction[Any, T]): T = {
-      expectEventPF {
-        case OnNext(n) if f.isDefinedAt(n) ⇒ f(n)
-      }
-    }
+    /**
+     * Expect a stream element and test it with partial function.
+     *
+     */
+    def expectNextPF[T](f: PartialFunction[Any, T]): T =
+      expectNextWithTimeoutPF(Duration.Undefined, f)
 
     /**
-     * Expect next element and test it with partial function.
+     * Expect a stream element and test it with partial function.
+     *
+     * @param max wait no more than max time, otherwise throw AssertionError
+     */
+    def expectNextWithTimeoutPF[T](max: Duration, f: PartialFunction[Any, T]): T =
+      expectEventWithTimeoutPF(max, {
+        case OnNext(n) if f.isDefinedAt(n) ⇒ f(n)
+      })
+
+    /**
+     * Expect a stream element during specified time or timeout and test it with partial function.
+     *
+     * Allows chaining probe methods.
+     *
+     * @param max wait no more than max time, otherwise throw AssertionError
+     */
+    def expectNextChainingPF(max: Duration, f: PartialFunction[Any, Any]): Self =
+      expectNextWithTimeoutPF(max, f.andThen(_ ⇒ self))
+
+    /**
+     * Expect a stream element during specified time or timeout and test it with partial function.
      *
      * Allows chaining probe methods.
      */
-    def expectNextChainingPF(f: PartialFunction[Any, Any]): Self = {
-      expectNextPF(f.andThen(_ ⇒ self))
-    }
+    def expectNextChainingPF(f: PartialFunction[Any, Any]): Self =
+      expectNextChainingPF(Duration.Undefined, f)
+
+    def expectEventWithTimeoutPF[T](max: Duration, f: PartialFunction[SubscriberEvent, T]): T =
+      probe.expectMsgPF[T](max, hint = "message matching partial function")(f.asInstanceOf[PartialFunction[Any, T]])
 
     def expectEventPF[T](f: PartialFunction[SubscriberEvent, T]): T =
-      probe.expectMsgPF[T](hint = "message matching partial function")(f.asInstanceOf[PartialFunction[Any, T]])
+      expectEventWithTimeoutPF(Duration.Undefined, f)
 
     /**
      * Receive messages for a given duration or until one does not match a given partial function.
@@ -588,7 +634,28 @@ object TestSubscriber {
       drain()
     }
 
-    def within[T](max: FiniteDuration)(f: ⇒ T): T = probe.within(0.seconds, max)(f)
+    /**
+     * Execute code block while bounding its execution time between `min` and
+     * `max`. `within` blocks may be nested. All methods in this trait which
+     * take maximum wait times are available in a version which implicitly uses
+     * the remaining time governed by the innermost enclosing `within` block.
+     *
+     * Note that the timeout is scaled using Duration.dilated, which uses the
+     * configuration entry "akka.test.timefactor", while the min Duration is not.
+     *
+     * {{{
+     * val ret = within(50 millis) {
+     *   test ! "ping"
+     *   expectMsgClass(classOf[String])
+     * }
+     * }}}
+     */
+    def within[T](min: FiniteDuration, max: FiniteDuration)(f: ⇒ T): T = probe.within(min, max)(f)
+
+    /**
+     * Same as calling `within(0 seconds, max)(f)`.
+     */
+    def within[T](max: FiniteDuration)(f: ⇒ T): T = probe.within(max)(f)
 
     def onSubscribe(subscription: Subscription): Unit = probe.ref ! OnSubscribe(subscription)
     def onNext(element: I): Unit = probe.ref ! OnNext(element)

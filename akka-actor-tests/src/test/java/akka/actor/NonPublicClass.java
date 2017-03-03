@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.actor;
@@ -10,7 +10,7 @@ public class NonPublicClass {
     }
 }
 
-class MyNonPublicActorClass extends UntypedActor {
+class MyNonPublicActorClass extends UntypedAbstractActor {
     @Override public void onReceive(Object msg) {
         getSender().tell(msg, getSelf());
     }

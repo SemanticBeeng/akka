@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.cluster
 
@@ -31,6 +31,7 @@ object RestartNodeMultiJvmSpec extends MultiNodeConfig {
   commonConfig(debugConfig(on = false).
     withFallback(ConfigFactory.parseString("""
       akka.cluster.auto-down-unreachable-after = 5s
+      akka.cluster.allow-weakly-up-members = off
       #akka.remote.use-passive-connections = off
       """)).
     withFallback(MultiNodeClusterSpec.clusterConfig))
@@ -71,8 +72,10 @@ abstract class RestartNodeSpec
 
   lazy val restartedSecondSystem = ActorSystem(
     system.name,
-    ConfigFactory.parseString("akka.remote.netty.tcp.port=" + secondUniqueAddress.address.port.get).
-      withFallback(system.settings.config))
+    ConfigFactory.parseString(s"""
+      akka.remote.netty.tcp.port = ${secondUniqueAddress.address.port.get}
+      akka.remote.artery.canonical.port = ${secondUniqueAddress.address.port.get}
+      """).withFallback(system.settings.config))
 
   override def afterAll(): Unit = {
     runOn(second) {

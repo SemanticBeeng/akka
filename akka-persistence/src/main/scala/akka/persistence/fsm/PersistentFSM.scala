@@ -1,17 +1,18 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.persistence.fsm
 
 import akka.actor._
+import akka.annotation.InternalApi
 import akka.persistence.fsm.PersistentFSM.FSMState
 import akka.persistence.serialization.Message
 import akka.persistence.{ PersistentActor, RecoveryCompleted, SnapshotOffer }
 
 import scala.annotation.varargs
 import scala.collection.immutable
-import scala.concurrent.duration.{ Duration, FiniteDuration }
+import scala.concurrent.duration._
 import scala.reflect.ClassTag
 
 /**
@@ -25,7 +26,6 @@ import scala.reflect.ClassTag
  * Incoming messages are deferred until the state is applied.
  * State Data is constructed based on domain events, according to user's implementation of applyEvent function.
  *
- * This is an EXPERIMENTAL feature and is subject to change until it has received more real world testing.
  */
 trait PersistentFSM[S <: FSMState, D, E] extends PersistentActor with PersistentFSMBase[S, D, E] with ActorLogging {
   import akka.persistence.fsm.PersistentFSM._
@@ -133,9 +133,17 @@ trait PersistentFSM[S <: FSMState, D, E] extends PersistentActor with Persistent
 }
 
 object PersistentFSM {
+
+  /**
+   * Used by `forMax` to signal "cancel stateTimeout"
+   */
+  @InternalApi
+  private[fsm] final val SomeMaxFiniteDuration = Some(Long.MaxValue.nanos)
+
   /**
    * Base persistent event class
    */
+  @InternalApi
   private[persistence] sealed trait PersistentFsmEvent extends Message
 
   /**
@@ -144,6 +152,7 @@ object PersistentFSM {
    * @param stateIdentifier FSM state identifier
    * @param timeout FSM state timeout
    */
+  @InternalApi
   private[persistence] case class StateChangeEvent(stateIdentifier: String, timeout: Option[FiniteDuration]) extends PersistentFsmEvent
 
   /**
@@ -154,6 +163,7 @@ object PersistentFSM {
    * @param timeout FSM state timeout
    * @tparam D state data type
    */
+  @InternalApi
   private[persistence] case class PersistentFSMSnapshot[D](stateIdentifier: String, data: D, timeout: Option[FiniteDuration]) extends Message
 
   /**
@@ -231,12 +241,14 @@ object PersistentFSM {
   case object StateTimeout
 
   /** INTERNAL API */
+  @InternalApi
   private[persistence] final case class TimeoutMarker(generation: Long)
 
   /**
    * INTERNAL API
    */
   // FIXME: what about the cancellable?
+  @InternalApi
   private[persistence] final case class Timer(name: String, msg: Any, repeat: Boolean, generation: Int)(context: ActorContext)
     extends NoSerializationVerificationNeeded {
     private var ref: Option[Cancellable] = _
@@ -287,6 +299,7 @@ object PersistentFSM {
     /**
      * Copy object and update values if needed.
      */
+    @InternalApi
     private[akka] def copy(stateName: S = stateName, stateData: D = stateData, timeout: Option[FiniteDuration] = timeout, stopReason: Option[Reason] = stopReason, replies: List[Any] = replies, notifies: Boolean = notifies, domainEvents: Seq[E] = domainEvents, afterTransitionDo: D ⇒ Unit = afterTransitionDo): State[S, D, E] = {
       State(stateName, stateData, timeout, stopReason, replies, domainEvents, afterTransitionDo)(notifies)
     }
@@ -300,7 +313,7 @@ object PersistentFSM {
      */
     def forMax(timeout: Duration): State[S, D, E] = timeout match {
       case f: FiniteDuration ⇒ copy(timeout = Some(f))
-      case _                 ⇒ copy(timeout = None)
+      case _                 ⇒ copy(timeout = PersistentFSM.SomeMaxFiniteDuration) // we need to differentiate "not set" from disabled
     }
 
     /**
@@ -316,6 +329,7 @@ object PersistentFSM {
      * Modify state transition descriptor with new state data. The data will be
      * set when transitioning to the new state.
      */
+    @InternalApi
     private[akka] def using(@deprecatedName('nextStateDate) nextStateData: D): State[S, D, E] = {
       copy(stateData = nextStateData)
     }
@@ -323,10 +337,12 @@ object PersistentFSM {
     /**
      * INTERNAL API.
      */
+    @InternalApi
     private[akka] def withStopReason(reason: Reason): State[S, D, E] = {
       copy(stopReason = Some(reason))
     }
 
+    @InternalApi
     private[akka] def withNotification(notifies: Boolean): State[S, D, E] = {
       copy(notifies = notifies)
     }
@@ -365,7 +381,6 @@ object PersistentFSM {
  *
  * Persistent Finite State Machine actor abstract base class.
  *
- * This is an EXPERIMENTAL feature and is subject to change until it has received more real world testing.
  */
 abstract class AbstractPersistentFSM[S <: FSMState, D, E] extends AbstractPersistentFSMBase[S, D, E] with PersistentFSM[S, D, E] {
   import java.util.function.Consumer
@@ -397,7 +412,6 @@ abstract class AbstractPersistentFSM[S <: FSMState, D, E] extends AbstractPersis
  *
  * Persistent Finite State Machine actor abstract base class with FSM Logging
  *
- * This is an EXPERIMENTAL feature and is subject to change until it has received more real world testing.
  */
 abstract class AbstractPersistentLoggingFSM[S <: FSMState, D, E]
   extends AbstractPersistentFSMBase[S, D, E]

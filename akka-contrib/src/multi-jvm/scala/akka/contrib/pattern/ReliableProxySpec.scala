@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.contrib.pattern
@@ -12,12 +12,14 @@ import org.scalatest.BeforeAndAfterEach
 import akka.remote.transport.ThrottlerTransportAdapter.Direction
 import akka.actor._
 import akka.testkit.ImplicitSender
+
 import scala.concurrent.duration._
 import akka.actor.FSM
 import akka.actor.ActorRef
 import akka.testkit.TestKitExtension
 import akka.actor.ActorIdentity
 import akka.actor.Identify
+import com.typesafe.config.ConfigValueFactory
 
 object ReliableProxySpec extends MultiNodeConfig {
   val local = role("local")

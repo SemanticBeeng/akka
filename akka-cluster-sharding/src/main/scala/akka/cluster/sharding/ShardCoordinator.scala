@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.cluster.sharding
 
@@ -21,6 +21,7 @@ import akka.cluster.ddata.Replicator._
 import akka.dispatch.ExecutionContexts
 import akka.pattern.{ AskTimeoutException, pipe }
 import akka.persistence._
+import akka.cluster.ClusterEvent
 
 /**
  * @see [[ClusterSharding$ ClusterSharding extension]]
@@ -43,8 +44,9 @@ object ShardCoordinator {
    */
   private[akka] def props(typeName: String, settings: ClusterShardingSettings,
                           allocationStrategy: ShardAllocationStrategy,
-                          replicator:         ActorRef): Props =
-    Props(new DDataShardCoordinator(typeName: String, settings, allocationStrategy, replicator)).withDeploy(Deploy.local)
+                          replicator:         ActorRef, majorityMinCap: Int): Props =
+    Props(new DDataShardCoordinator(typeName: String, settings, allocationStrategy, replicator,
+      majorityMinCap)).withDeploy(Deploy.local)
 
   /**
    * Interface of the pluggable shard allocation and rebalancing logic used by the [[ShardCoordinator]].
@@ -236,6 +238,7 @@ object ShardCoordinator {
      * `ShardRegion` requests full handoff to be able to shutdown gracefully.
      */
     @SerialVersionUID(1L) final case class GracefulShutdownReq(shardRegion: ActorRef) extends CoordinatorCommand
+      with DeadLetterSuppression
 
     // DomainEvents for the persistent state of the event sourced ShardCoordinator
     sealed trait DomainEvent extends ClusterShardingSerializable
@@ -436,15 +439,15 @@ abstract class ShardCoordinator(typeName: String, settings: ClusterShardingSetti
       if (isMember(region)) {
         log.debug("ShardRegion registered: [{}]", region)
         aliveRegions += region
-        if (state.regions.contains(region))
+        if (state.regions.contains(region)) {
           region ! RegisterAck(self)
-        else {
+          allocateShardHomesForRememberEntities()
+        } else {
           gracefulShutdownInProgress -= region
           update(ShardRegionRegistered(region)) { evt ⇒
             state = state.updated(evt)
             context.watch(region)
             region ! RegisterAck(self)
-
             allocateShardHomesForRememberEntities()
           }
         }
@@ -692,7 +695,7 @@ abstract class ShardCoordinator(typeName: String, settings: ClusterShardingSetti
   }
 
   def allocateShardHomesForRememberEntities(): Unit = {
-    if (settings.rememberEntities)
+    if (settings.rememberEntities && state.unallocatedShards.nonEmpty)
       state.unallocatedShards.foreach { self ! GetShardHome(_) }
   }
 
@@ -779,12 +782,11 @@ class PersistentShardCoordinator(typeName: String, settings: ClusterShardingSett
 
     case SnapshotOffer(_, st: State) ⇒
       log.debug("receiveRecover SnapshotOffer {}", st)
+      state = st.withRememberEntities(settings.rememberEntities)
       //Old versions of the state object may not have unallocatedShard set,
       // thus it will be null.
-      if (st.unallocatedShards == null)
-        state = st.copy(unallocatedShards = Set.empty)
-      else
-        state = st
+      if (state.unallocatedShards == null)
+        state = state.copy(unallocatedShards = Set.empty)
 
     case RecoveryCompleted ⇒
       state = state.withRememberEntities(settings.rememberEntities)
@@ -801,11 +803,37 @@ class PersistentShardCoordinator(typeName: String, settings: ClusterShardingSett
   }: Receive).orElse[Any, Unit](receiveTerminated).orElse[Any, Unit](receiveSnapshotResult)
 
   def receiveSnapshotResult: Receive = {
-    case SaveSnapshotSuccess(_) ⇒
+    case SaveSnapshotSuccess(m) ⇒
       log.debug("Persistent snapshot saved successfully")
+      /*
+       * delete old events but keep the latest around because
+       *
+       * it's not safe to delete all events immediate because snapshots are typically stored with a weaker consistency
+       * level which means that a replay might "see" the deleted events before it sees the stored snapshot,
+       * i.e. it will use an older snapshot and then not replay the full sequence of events
+       *
+       * for debugging if something goes wrong in production it's very useful to be able to inspect the events
+       */
+      val deleteToSequenceNr = m.sequenceNr - keepNrOfBatches * snapshotAfter
+      if (deleteToSequenceNr > 0) {
+        deleteMessages(deleteToSequenceNr)
+      }
 
     case SaveSnapshotFailure(_, reason) ⇒
       log.warning("Persistent snapshot failure: {}", reason.getMessage)
+
+    case DeleteMessagesSuccess(toSequenceNr) ⇒
+      log.debug("Persistent messages to {} deleted successfully", toSequenceNr)
+      deleteSnapshots(SnapshotSelectionCriteria(maxSequenceNr = toSequenceNr - 1))
+
+    case DeleteMessagesFailure(reason, toSequenceNr) ⇒
+      log.warning("Persistent messages to {} deletion failure: {}", toSequenceNr, reason.getMessage)
+
+    case DeleteSnapshotSuccess(m) ⇒
+      log.debug("Persistent snapshots matching {} deleted successfully", m)
+
+    case DeleteSnapshotFailure(m, reason) ⇒
+      log.warning("Persistent snapshots matching {} deletion falure: {}", m, reason.getMessage)
   }
 
   def update[E <: DomainEvent](evt: E)(f: E ⇒ Unit): Unit = {
@@ -828,19 +856,22 @@ class PersistentShardCoordinator(typeName: String, settings: ClusterShardingSett
  */
 class DDataShardCoordinator(typeName: String, settings: ClusterShardingSettings,
                             allocationStrategy: ShardCoordinator.ShardAllocationStrategy,
-                            replicator:         ActorRef)
+                            replicator:         ActorRef,
+                            majorityMinCap:     Int)
   extends ShardCoordinator(typeName, settings, allocationStrategy) with Stash {
   import ShardCoordinator.Internal._
   import akka.cluster.ddata.Replicator.Update
 
-  val waitingForStateTimeout = settings.tuningParameters.waitingForStateTimeout
-  val updatingStateTimeout = settings.tuningParameters.updatingStateTimeout
+  private val readMajority = ReadMajority(
+    settings.tuningParameters.waitingForStateTimeout,
+    majorityMinCap)
+  private val writeMajority = WriteMajority(settings.tuningParameters.updatingStateTimeout, majorityMinCap)
 
   implicit val node = Cluster(context.system)
   val CoordinatorStateKey = LWWRegisterKey[State](s"${typeName}CoordinatorState")
   val initEmptyState = State.empty.withRememberEntities(settings.rememberEntities)
 
-  node.subscribe(self, ClusterShuttingDown.getClass)
+  node.subscribe(self, ClusterEvent.InitialStateAsEvents, ClusterShuttingDown.getClass)
 
   // get state from ddata replicator, repeat until GetSuccess
   getState()
@@ -858,7 +889,7 @@ class DDataShardCoordinator(typeName: String, settings: ClusterShardingSettings,
     case GetFailure(CoordinatorStateKey, _) ⇒
       log.error(
         "The ShardCoordinator was unable to get an initial state within 'waiting-for-state-timeout' (was retrying): {} millis",
-        waitingForStateTimeout.toMillis)
+        readMajority.timeout.toMillis)
       // repeat until GetSuccess
       getState()
 
@@ -880,7 +911,7 @@ class DDataShardCoordinator(typeName: String, settings: ClusterShardingSettings,
   }
 
   // this state will stash all messages until it receives UpdateSuccess
-  def waitingForUpdate[E <: DomainEvent](evt: E, afterUpdateCallback: DomainEvent ⇒ Unit): Receive = {
+  def waitingForUpdate[E <: DomainEvent](evt: E, afterUpdateCallback: E ⇒ Unit): Receive = {
     case UpdateSuccess(CoordinatorStateKey, Some(`evt`)) ⇒
       log.debug("The coordinator state was successfully updated with {}", evt)
       context.unbecome()
@@ -890,7 +921,7 @@ class DDataShardCoordinator(typeName: String, settings: ClusterShardingSettings,
     case UpdateTimeout(CoordinatorStateKey, Some(`evt`)) ⇒
       log.error(
         "The ShardCoordinator was unable to update a distributed state within 'updating-state-timeout'={} millis (was retrying), event={}",
-        updatingStateTimeout.toMillis,
+        writeMajority.timeout.toMillis,
         evt)
       // repeat until UpdateSuccess
       sendUpdate(evt)
@@ -912,16 +943,16 @@ class DDataShardCoordinator(typeName: String, settings: ClusterShardingSettings,
   }
 
   def update[E <: DomainEvent](evt: E)(f: E ⇒ Unit): Unit = {
-    context.become(waitingForUpdate(evt, f.asInstanceOf[DomainEvent ⇒ Unit]), discardOld = false)
+    context.become(waitingForUpdate(evt, f), discardOld = false)
     sendUpdate(evt)
   }
 
   def getState(): Unit =
-    replicator ! Get(CoordinatorStateKey, ReadMajority(waitingForStateTimeout))
+    replicator ! Get(CoordinatorStateKey, readMajority)
 
   def sendUpdate(evt: DomainEvent) = {
     val s = state.updated(evt)
-    replicator ! Update(CoordinatorStateKey, LWWRegister(initEmptyState), WriteMajority(updatingStateTimeout), Some(evt)) { reg ⇒
+    replicator ! Update(CoordinatorStateKey, LWWRegister(initEmptyState), writeMajority, Some(evt)) { reg ⇒
       reg.withValue(s)
     }
   }

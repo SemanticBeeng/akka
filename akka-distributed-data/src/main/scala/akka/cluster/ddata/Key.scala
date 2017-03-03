@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2015-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2015-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.cluster.ddata
 
@@ -11,6 +11,8 @@ object Key {
 
   private[akka]type KeyR = Key[ReplicatedData]
 
+  type KeyId = String
+
 }
 
 /**
@@ -21,7 +23,7 @@ object Key {
  * Specific classes are provided for the built in data types, e.g. [[ORSetKey]],
  * and you can create your own keys.
  */
-abstract class Key[+T <: ReplicatedData](val id: String) extends Serializable {
+abstract class Key[+T <: ReplicatedData](val id: Key.KeyId) extends Serializable {
 
   override final def equals(o: Any): Boolean = o match {
     case k: Key[_] ⇒ id == k.id

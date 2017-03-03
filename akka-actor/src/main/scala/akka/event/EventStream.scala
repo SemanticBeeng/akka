@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.event
 
@@ -10,11 +10,6 @@ import akka.event.Logging.simpleName
 import akka.util.Subclassification
 import java.util.concurrent.atomic.AtomicReference
 import scala.annotation.tailrec
-
-object EventStream {
-  @deprecated("Use explicit `system.eventStream` instead", "2.4")
-  implicit def fromActorSystem(system: ActorSystem) = system.eventStream
-}
 
 /**
  * An Akka EventStream is a pub-sub stream of events both system and user generated,
@@ -28,9 +23,6 @@ object EventStream {
 class EventStream(sys: ActorSystem, private val debug: Boolean) extends LoggingBus with SubchannelClassification {
 
   def this(sys: ActorSystem) = this(sys, debug = false)
-
-  @deprecated("Use constructor with ActorSystem parameter", "2.4")
-  def this(debug: Boolean = false) = this(sys = null, debug)
 
   type Event = AnyRef
   type Classifier = Class[_]

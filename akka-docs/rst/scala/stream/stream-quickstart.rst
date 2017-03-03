@@ -192,7 +192,7 @@ only make sense in streaming and vice versa):
 Finally in order to :ref:`materialize <stream-materialization-scala>` and run the stream computation we need to attach
 the Flow to a :class:`Sink` that will get the Flow running. The simplest way to do this is to call
 ``runWith(sink)`` on a ``Source``. For convenience a number of common Sinks are predefined and collected as methods on
-the :class:`Sink` `companion object <http://doc.akka.io/api/akka-stream-and-http-experimental/@version@/#akka.stream.scaladsl.Sink$>`_.
+the :class:`Sink` companion object.
 For now let's simply print each author:
 
 .. includecode:: ../code/docs/stream/TwitterStreamQuickstartDocSpec.scala#authors-foreachsink-println
@@ -223,7 +223,7 @@ combinator:
   due to the risk of deadlock (with merge being the preferred strategy), and second, the monad laws would not hold for
   our implementation of flatMap (due to the liveness issues).
 
-  Please note that the ``mapConcat`` requires the supplied function to return a strict collection (``f:Out=>immutable.Seq[T]``),
+  Please note that the ``mapConcat`` requires the supplied function to return an iterable (``f: Out => immutable.Iterable[T]``),
   whereas ``flatMap`` would have to operate on streams all the way through.
 
 Broadcasting a stream
@@ -248,7 +248,7 @@ As you can see, inside the :class:`GraphDSL` we use an implicit graph builder ``
 using the ``~>`` "edge operator" (also read as "connect" or "via" or "to"). The operator is provided implicitly
 by importing ``GraphDSL.Implicits._``.
 
-``GraphDSL.create`` returns a :class:`Graph`, in this example a :class:`Graph[ClosedShape, Unit]` where
+``GraphDSL.create`` returns a :class:`Graph`, in this example a :class:`Graph[ClosedShape, NotUsed]` where
 :class:`ClosedShape` means that it is *a fully connected graph* or "closed" - there are no unconnected inputs or outputs.
 Since it is closed it is possible to transform the graph into a :class:`RunnableGraph` using ``RunnableGraph.fromGraph``.
 The runnable graph can then be ``run()`` to materialize a stream out of it.

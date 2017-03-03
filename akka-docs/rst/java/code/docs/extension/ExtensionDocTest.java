@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package docs.extension;
 
@@ -57,11 +57,16 @@ public class ExtensionDocTest extends AbstractJavaTest {
 
   static
   //#extension-usage-actor
-  public class MyActor extends UntypedActor {
-    public void onReceive(Object msg) {
-      // typically you would use static import of the
-      // CountExtension.CountExtensionProvider field
-      CountExtension.CountExtensionProvider.get(getContext().system()).increment();
+  public class MyActor extends AbstractActor {
+    @Override
+    public Receive createReceive() {
+      return receiveBuilder()
+        .matchAny(msg -> {
+          // typically you would use static import of the
+          // CountExtension.CountExtensionProvider field
+          CountExtension.CountExtensionProvider.get(getContext().system()).increment();
+        })
+        .build();
     }
   }
 

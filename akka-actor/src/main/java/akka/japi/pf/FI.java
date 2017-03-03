@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.japi.pf;
@@ -8,7 +8,6 @@ package akka.japi.pf;
  * Class that encapsulates all the Functional Interfaces
  * used for creating partial functions.
  *
- * This is an EXPERIMENTAL feature and is subject to change until it has received more real world testing.
  */
 public final class FI {
   private FI() {

@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.remote
 
@@ -80,6 +80,7 @@ object RemotingSpec {
 
     akka {
       actor.provider = remote
+      actor.serialize-messages = off
 
       remote {
         retry-gate-closed-for = 1 s

@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.actor
@@ -18,6 +18,8 @@ import java.util.concurrent.ThreadLocalRandom
 import scala.util.control.NonFatal
 import akka.dispatch.MessageDispatcher
 import akka.util.Reflect
+import akka.japi.pf.ReceiveBuilder
+import akka.actor.AbstractActor.Receive
 
 /**
  * The actor context - the view of the actor cell from the actor.
@@ -161,28 +163,10 @@ trait ActorContext extends ActorRefFactory {
 }
 
 /**
- * AbstractActorContext is the AbstractActor equivalent of ActorContext,
- * containing the Java API
- */
-trait AbstractActorContext extends ActorContext {
-
-  /**
-   * Returns an unmodifiable Java Collection containing the linked actors,
-   * please note that the backing map is thread-safe but not immutable
-   */
-  def getChildren(): java.lang.Iterable[ActorRef]
-
-  /**
-   * Returns a reference to the named child or null if no child with
-   * that name exists.
-   */
-  def getChild(name: String): ActorRef
-}
-
-/**
  * UntypedActorContext is the UntypedActor equivalent of ActorContext,
  * containing the Java API
  */
+@deprecated("Use AbstractActor.ActorContext instead of UntypedActorContext.", since = "2.5.0")
 trait UntypedActorContext extends ActorContext {
 
   /**
@@ -340,7 +324,7 @@ private[akka] object ActorCell {
 
   final val emptyActorRefSet: Set[ActorRef] = immutable.HashSet.empty
 
-  final val terminatedProps: Props = Props((throw new IllegalActorStateException("This Actor has been terminated")): Actor)
+  final val terminatedProps: Props = Props((throw IllegalActorStateException("This Actor has been terminated")): Actor)
 
   final val undefinedUid = 0
 
@@ -377,7 +361,7 @@ private[akka] class ActorCell(
   final val props: Props, // Must be final so that it can be properly cleared in clearActorCellFields
   val dispatcher:  MessageDispatcher,
   val parent:      InternalActorRef)
-  extends UntypedActorContext with AbstractActorContext with Cell
+  extends UntypedActorContext with AbstractActor.ActorContext with Cell
   with dungeon.ReceiveTimeout
   with dungeon.Children
   with dungeon.Dispatch
@@ -510,7 +494,7 @@ private[akka] class ActorCell(
     msg.message match {
       case t: Terminated              ⇒ receivedTerminated(t)
       case AddressTerminated(address) ⇒ addressTerminated(address)
-      case Kill                       ⇒ throw new ActorKilledException("Kill")
+      case Kill                       ⇒ throw ActorKilledException("Kill")
       case PoisonPill                 ⇒ self.stop()
       case sel: ActorSelectionMessage ⇒ receiveSelection(sel)
       case Identify(messageId)        ⇒ sender() ! ActorIdentity(messageId, Some(self))
@@ -642,7 +626,7 @@ private[akka] class ActorCell(
     if (actorInstance ne null) {
       if (!Reflect.lookupAndSetField(actorInstance.getClass, actorInstance, "context", context)
         || !Reflect.lookupAndSetField(actorInstance.getClass, actorInstance, "self", self))
-        throw new IllegalActorStateException(actorInstance.getClass + " is not an Actor since it have not mixed in the 'Actor' trait")
+        throw IllegalActorStateException(actorInstance.getClass + " is not an Actor since it have not mixed in the 'Actor' trait")
     }
 
   // logging is not the main purpose, and if it fails there’s nothing we can do

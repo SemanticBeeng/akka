@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 
 package akka.cluster.singleton
@@ -222,8 +222,13 @@ final class ClusterSingletonProxy(singletonManagerPath: String, settings: Cluste
   def receive = {
     // cluster logic
     case state: CurrentClusterState ⇒ handleInitial(state)
-    case MemberUp(m) ⇒ add(m)
-    case mEvent: MemberEvent if mEvent.isInstanceOf[MemberExited] || mEvent.isInstanceOf[MemberRemoved] ⇒ remove(mEvent.member)
+    case MemberUp(m)                ⇒ add(m)
+    case MemberExited(m)            ⇒ remove(m)
+    case MemberRemoved(m, _) ⇒
+      if (m.uniqueAddress == cluster.selfUniqueAddress)
+        context.stop(self)
+      else
+        remove(m)
     case _: MemberEvent ⇒ // do nothing
 
     // singleton identification logic

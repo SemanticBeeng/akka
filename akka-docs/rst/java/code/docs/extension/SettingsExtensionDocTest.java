@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package docs.extension;
 
@@ -9,14 +9,14 @@ import akka.actor.AbstractExtensionId;
 import akka.actor.ExtensionIdProvider;
 import akka.actor.ActorSystem;
 import akka.actor.ExtendedActorSystem;
-import docs.AbstractJavaTest;
 import scala.concurrent.duration.Duration;
 import com.typesafe.config.Config;
 import java.util.concurrent.TimeUnit;
 
 //#imports
 
-import akka.actor.UntypedActor;
+import docs.AbstractJavaTest;
+import akka.actor.AbstractActor;
 import org.junit.Test;
 
 public class SettingsExtensionDocTest extends AbstractJavaTest {
@@ -60,7 +60,7 @@ public class SettingsExtensionDocTest extends AbstractJavaTest {
 
   static
   //#extension-usage-actor
-  public class MyActor extends UntypedActor {
+  public class MyActor extends AbstractActor {
     // typically you would use static import of the Settings.SettingsProvider field
     final SettingsImpl settings =
       Settings.SettingsProvider.get(getContext().system());
@@ -73,7 +73,9 @@ public class SettingsExtensionDocTest extends AbstractJavaTest {
       return new Connection();
     }
 
-    public void onReceive(Object msg) {
+    @Override
+    public Receive createReceive() {
+      return AbstractActor.emptyBehavior();
     }
   //#extension-usage-actor
   }

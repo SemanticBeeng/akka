@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.cluster.ddata.protobuf
 
@@ -23,21 +23,25 @@ import akka.util.ByteString
 import akka.cluster.UniqueAddress
 import akka.remote.RARP
 import com.typesafe.config.ConfigFactory
+import akka.cluster.ddata.DurableStore.DurableDataEnvelope
+import akka.cluster.ddata.GCounter
+import akka.cluster.ddata.VersionVector
 
 class ReplicatorMessageSerializerSpec extends TestKit(ActorSystem(
   "ReplicatorMessageSerializerSpec",
   ConfigFactory.parseString("""
     akka.actor.provider=cluster
     akka.remote.netty.tcp.port=0
+    akka.remote.artery.canonical.port = 0
     """))) with WordSpecLike with Matchers with BeforeAndAfterAll {
 
   val serializer = new ReplicatorMessageSerializer(system.asInstanceOf[ExtendedActorSystem])
 
   val Protocol = if (RARP(system).provider.remoteSettings.Artery.Enabled) "akka" else "akka.tcp"
 
-  val address1 = UniqueAddress(Address(Protocol, system.name, "some.host.org", 4711), 1)
-  val address2 = UniqueAddress(Address(Protocol, system.name, "other.host.org", 4711), 2)
-  val address3 = UniqueAddress(Address(Protocol, system.name, "some.host.org", 4712), 3)
+  val address1 = UniqueAddress(Address(Protocol, system.name, "some.host.org", 4711), 1L)
+  val address2 = UniqueAddress(Address(Protocol, system.name, "other.host.org", 4711), 2L)
+  val address3 = UniqueAddress(Address(Protocol, system.name, "some.host.org", 4712), 3L)
 
   val keyA = GSetKey[String]("A")
 
@@ -45,10 +49,11 @@ class ReplicatorMessageSerializerSpec extends TestKit(ActorSystem(
     shutdown()
   }
 
-  def checkSerialization(obj: AnyRef): Unit = {
+  def checkSerialization[T <: AnyRef](obj: T): T = {
     val blob = serializer.toBinary(obj)
-    val ref = serializer.fromBinary(blob, serializer.manifest(obj))
-    ref should be(obj)
+    val deserialized = serializer.fromBinary(blob, serializer.manifest(obj))
+    deserialized should be(obj)
+    deserialized.asInstanceOf[T]
   }
 
   "ReplicatorMessageSerializer" must {
@@ -56,6 +61,8 @@ class ReplicatorMessageSerializerSpec extends TestKit(ActorSystem(
     "serialize Replicator messages" in {
       val ref1 = system.actorOf(Props.empty, "ref1")
       val data1 = GSet.empty[String] + "a"
+      val delta1 = GCounter.empty.increment(address1, 17).increment(address2, 2)
+      val delta2 = delta1.increment(address2, 1)
 
       checkSerialization(Get(keyA, ReadLocal))
       checkSerialization(Get(keyA, ReadMajority(2.seconds), Some("x")))
@@ -68,10 +75,11 @@ class ReplicatorMessageSerializerSpec extends TestKit(ActorSystem(
       checkSerialization(Changed(keyA)(data1))
       checkSerialization(DataEnvelope(data1))
       checkSerialization(DataEnvelope(data1, pruning = Map(
-        address1 → PruningState(address2, PruningPerformed),
-        address3 → PruningState(address2, PruningInitialized(Set(address1.address))))))
+        address1 → PruningPerformed(System.currentTimeMillis()),
+        address3 → PruningInitialized(address2, Set(address1.address)))))
       checkSerialization(Write("A", DataEnvelope(data1)))
       checkSerialization(WriteAck)
+      checkSerialization(WriteNack)
       checkSerialization(Read("A"))
       checkSerialization(ReadResult(Some(DataEnvelope(data1))))
       checkSerialization(ReadResult(None))
@@ -81,6 +89,25 @@ class ReplicatorMessageSerializerSpec extends TestKit(ActorSystem(
       checkSerialization(Gossip(Map(
         "A" → DataEnvelope(data1),
         "B" → DataEnvelope(GSet() + "b" + "c")), sendBack = true))
+      checkSerialization(DeltaPropagation(address1, Map(
+        "A" → Delta(DataEnvelope(delta1), 1L, 1L),
+        "B" → Delta(DataEnvelope(delta2), 3L, 5L))))
+
+      checkSerialization(new DurableDataEnvelope(data1))
+      val pruning = Map(
+        address1 → PruningPerformed(System.currentTimeMillis()),
+        address3 → PruningInitialized(address2, Set(address1.address)))
+      val deserializedDurableDataEnvelope =
+        checkSerialization(new DurableDataEnvelope(DataEnvelope(data1, pruning,
+          deltaVersions = VersionVector(address1, 13L))))
+      // equals of DurableDataEnvelope is only checking the data, PruningPerformed
+      // should be serialized
+      val expectedPruning = pruning.filter {
+        case (_, _: PruningPerformed) ⇒ true
+        case _                        ⇒ false
+      }
+      deserializedDurableDataEnvelope.dataEnvelope.pruning should ===(expectedPruning)
+      deserializedDurableDataEnvelope.dataEnvelope.deltaVersions.size should ===(0)
     }
 
   }

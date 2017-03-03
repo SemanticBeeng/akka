@@ -1,27 +1,29 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.stream.io
 
-import akka.NotUsed
+import akka.{ Done, NotUsed }
 import akka.actor.{ ActorSystem, Address, Kill }
 import akka.io.Tcp._
-import akka.stream.scaladsl.Tcp.IncomingConnection
+import akka.stream.scaladsl.Tcp.{ IncomingConnection, ServerBinding }
 import akka.stream.scaladsl.{ Flow, _ }
 import akka.stream.testkit.TestUtils.temporaryServerAddress
 
 import scala.util.control.NonFatal
 import akka.stream.testkit.Utils._
 import akka.stream.testkit._
-import akka.stream.{ ActorMaterializer, BindFailedException, StreamTcpException }
+import akka.stream._
 import akka.util.{ ByteString, Helpers }
 
 import scala.collection.immutable
-import scala.concurrent.{ Await, Promise }
+import scala.concurrent.{ Await, Future, Promise }
 import scala.concurrent.duration._
-import java.net.{ BindException, InetSocketAddress }
+import java.net._
 
-import akka.testkit.EventFilter
+import akka.testkit.{ EventFilter, TestKit, TestLatch }
+import com.typesafe.config.ConfigFactory
+import org.scalatest.concurrent.PatienceConfiguration.Timeout
 
 class TcpSpec extends StreamSpec("akka.stream.materializer.subscription-timeout.timeout = 2s") with TcpHelper {
 
@@ -341,8 +343,8 @@ class TcpSpec extends StreamSpec("akka.stream.materializer.subscription-timeout.
       validateServerClientCommunication(testData, serverConnection1, tcpReadProbe1, tcpWriteProbe1)
       validateServerClientCommunication(testData, serverConnection2, tcpReadProbe2, tcpWriteProbe2)
 
-      val conn1 = Await.result(conn1F, 1.seconds)
-      val conn2 = Await.result(conn2F, 1.seconds)
+      val conn1 = conn1F.futureValue
+      val conn2 = conn2F.futureValue
 
       // Since we have already communicated over the connections we can have short timeouts for the futures
       conn1.remoteAddress.getPort should be(server.address.getPort)
@@ -361,17 +363,18 @@ class TcpSpec extends StreamSpec("akka.stream.materializer.subscription-timeout.
         Flow.fromSinkAndSourceMat(Sink.ignore, Source.single(ByteString("Early response")))(Keep.right)
 
       val binding =
-        Await.result(
-          Tcp().bind(serverAddress.getHostName, serverAddress.getPort, halfClose = false).toMat(Sink.foreach { conn ⇒
-            conn.flow.join(writeButIgnoreRead).run()
-          })(Keep.left).run(), 3.seconds)
+        Tcp().bind(serverAddress.getHostName, serverAddress.getPort, halfClose = false).toMat(Sink.foreach { conn ⇒
+          conn.flow.join(writeButIgnoreRead).run()
+        })(Keep.left)
+          .run()
+          .futureValue
 
       val (promise, result) = Source.maybe[ByteString]
         .via(Tcp().outgoingConnection(serverAddress.getHostName, serverAddress.getPort))
         .toMat(Sink.fold(ByteString.empty)(_ ++ _))(Keep.both)
         .run()
 
-      Await.result(result, 3.seconds) should ===(ByteString("Early response"))
+      result.futureValue should ===(ByteString("Early response"))
 
       promise.success(None) // close client upstream, no more data
       binding.unbind()
@@ -381,16 +384,17 @@ class TcpSpec extends StreamSpec("akka.stream.materializer.subscription-timeout.
       val serverAddress = temporaryServerAddress()
 
       val binding =
-        Await.result(
-          Tcp().bind(serverAddress.getHostName, serverAddress.getPort, halfClose = false).toMat(Sink.foreach { conn ⇒
-            conn.flow.join(Flow[ByteString]).run()
-          })(Keep.left).run(), 3.seconds)
+        Tcp().bind(serverAddress.getHostName, serverAddress.getPort, halfClose = false).toMat(Sink.foreach { conn ⇒
+          conn.flow.join(Flow[ByteString]).run()
+        })(Keep.left)
+          .run()
+          .futureValue
 
       val result = Source(immutable.Iterable.fill(1000)(ByteString(0)))
         .via(Tcp().outgoingConnection(serverAddress, halfClose = true))
         .runFold(0)(_ + _.size)
 
-      Await.result(result, 3.seconds) should ===(1000)
+      result.futureValue should ===(1000)
 
       binding.unbind()
     }
@@ -408,10 +412,11 @@ class TcpSpec extends StreamSpec("akka.stream.materializer.subscription-timeout.
       // Getting rid of existing connection actors by using a blunt instrument
       system2.actorSelection(akka.io.Tcp(system2).getManager.path / "selectors" / s"$$a" / "*") ! Kill
 
-      a[StreamTcpException] should be thrownBy
-        Await.result(result, 3.seconds)
+      result.failed.futureValue shouldBe a[StreamTcpException]
 
-      binding.map(_.unbind()).recover { case NonFatal(_) ⇒ () } foreach (_ ⇒ system2.shutdown())
+      binding.map(_.unbind()).recover { case NonFatal(_) ⇒ () }.foreach { _ ⇒
+        shutdown(system2)
+      }
     }
 
   }
@@ -430,28 +435,28 @@ class TcpSpec extends StreamSpec("akka.stream.materializer.subscription-timeout.
           .run()
 
       // make sure that the server has bound to the socket
-      val binding = Await.result(bindingFuture, remainingOrDefault)
+      val binding = bindingFuture.futureValue
 
       val testInput = (0 to 255).map(ByteString(_))
       val expectedOutput = ByteString(Array.tabulate(256)(_.asInstanceOf[Byte]))
       val resultFuture =
         Source(testInput).via(Tcp().outgoingConnection(serverAddress)).runFold(ByteString.empty)((acc, in) ⇒ acc ++ in)
 
-      Await.result(resultFuture, 3.seconds) should be(expectedOutput)
-      Await.result(binding.unbind(), 3.seconds)
-      Await.result(echoServerFinish, 1.second)
+      resultFuture.futureValue should be(expectedOutput)
+      binding.unbind().futureValue
+      echoServerFinish.futureValue
     }
 
     "work with a chain of echoes" in {
       val serverAddress = temporaryServerAddress()
       val (bindingFuture, echoServerFinish) =
         Tcp()
-          .bind(serverAddress.getHostName, serverAddress.getPort) // TODO getHostString in Java7
+          .bind(serverAddress.getHostString, serverAddress.getPort)
           .toMat(echoHandler)(Keep.both)
           .run()
 
       // make sure that the server has bound to the socket
-      val binding = Await.result(bindingFuture, remainingOrDefault)
+      val binding = bindingFuture.futureValue
 
       val echoConnection = Tcp().outgoingConnection(serverAddress)
 
@@ -466,17 +471,17 @@ class TcpSpec extends StreamSpec("akka.stream.materializer.subscription-timeout.
           .via(echoConnection)
           .runFold(ByteString.empty)((acc, in) ⇒ acc ++ in)
 
-      Await.result(resultFuture, 3.seconds) should be(expectedOutput)
-      Await.result(binding.unbind(), 3.seconds)
-      Await.result(echoServerFinish, 1.second)
+      resultFuture.futureValue should be(expectedOutput)
+      binding.unbind().futureValue
+      echoServerFinish.futureValue
     }
 
     "bind and unbind correctly" in EventFilter[BindException](occurrences = 2).intercept {
       val address = temporaryServerAddress()
       val probe1 = TestSubscriber.manualProbe[Tcp.IncomingConnection]()
-      val bind = Tcp(system).bind(address.getHostName, address.getPort) // TODO getHostString in Java7
+      val bind = Tcp(system).bind(address.getHostString, address.getPort)
       // Bind succeeded, we have a local address
-      val binding1 = Await.result(bind.to(Sink.fromSubscriber(probe1)).run(), 3.second)
+      val binding1 = bind.to(Sink.fromSubscriber(probe1)).run().futureValue
 
       probe1.expectSubscription()
 
@@ -488,34 +493,93 @@ class TcpSpec extends StreamSpec("akka.stream.materializer.subscription-timeout.
       val binding3F = bind.to(Sink.fromSubscriber(probe3)).run()
       probe3.expectSubscriptionAndError()
 
-      a[BindFailedException] shouldBe thrownBy { Await.result(binding2F, 1.second) }
-      a[BindFailedException] shouldBe thrownBy { Await.result(binding3F, 1.second) }
+      binding2F.failed.futureValue shouldBe a[BindFailedException]
+      binding3F.failed.futureValue shouldBe a[BindFailedException]
 
       // Now unbind first
-      Await.result(binding1.unbind(), 1.second)
+      binding1.unbind().futureValue
       probe1.expectComplete()
 
       val probe4 = TestSubscriber.manualProbe[Tcp.IncomingConnection]()
       // Bind succeeded, we have a local address
-      val binding4 = Await.result(bind.to(Sink.fromSubscriber(probe4)).run(), 3.second)
+      val binding4 = bind.to(Sink.fromSubscriber(probe4)).run().futureValue
       probe4.expectSubscription()
 
       // clean up
-      Await.result(binding4.unbind(), 1.second)
+      binding4.unbind().futureValue
     }
 
     "not shut down connections after the connection stream cancelled" in assertAllStagesStopped {
-      val address = temporaryServerAddress()
-      Tcp().bind(address.getHostName, address.getPort).take(1).runForeach { tcp ⇒
-        Thread.sleep(1000) // we're testing here to see if it survives such race
-        tcp.flow.join(Flow[ByteString]).run()
+
+      // configure a few timeouts we do not want to hit
+      val config = ConfigFactory.parseString("""
+        akka.actor.serializer-messages = off
+        akka.io.tcp.register-timeout = 42s
+      """)
+      val serverSystem = ActorSystem("server", config)
+      val clientSystem = ActorSystem("client", config)
+      val serverMaterializer = ActorMaterializer(ActorMaterializerSettings(serverSystem)
+        .withSubscriptionTimeoutSettings(StreamSubscriptionTimeoutSettings(
+          StreamSubscriptionTimeoutTerminationMode.cancel, 42.seconds)))(serverSystem)
+      val clientMaterializer = ActorMaterializer(ActorMaterializerSettings(clientSystem)
+        .withSubscriptionTimeoutSettings(StreamSubscriptionTimeoutSettings(
+          StreamSubscriptionTimeoutTerminationMode.cancel, 42.seconds)))(clientSystem)
+
+      try {
+
+        val address = temporaryServerAddress()
+        val completeRequest = TestLatch()(serverSystem)
+        val serverGotRequest = Promise[Done]()
+
+        def portClosed(): Boolean =
+          try {
+            val socket = new Socket()
+            socket.connect(address, 250)
+            socket.close()
+            serverSystem.log.info("port open")
+            false
+          } catch {
+            case _: SocketTimeoutException ⇒ true
+            case _: SocketException        ⇒ true
+          }
+
+        import serverSystem.dispatcher
+        val futureBinding: Future[ServerBinding] =
+          Tcp(serverSystem).bind(address.getHostName, address.getPort)
+            // accept one connection, then cancel
+            .take(1)
+            // keep the accepted request hanging
+            .map { connection ⇒
+              serverGotRequest.success(Done)
+              Future {
+                Await.ready(completeRequest, remainingOrDefault) // wait for the port close below
+                // when the server has closed the port and stopped accepting incoming
+                // connections, complete the one accepted connection
+                connection.flow.join(Flow[ByteString]).run()
+              }
+            }
+            .to(Sink.ignore)
+            .run()(serverMaterializer)
+
+        // make sure server is running first
+        futureBinding.futureValue
+
+        // then connect once, which should lead to the server cancelling
+        val total = Source(immutable.Iterable.fill(100)(ByteString(0)))
+          .via(Tcp(clientSystem).outgoingConnection(address))
+          .runFold(0)(_ + _.size)(clientMaterializer)
+
+        serverGotRequest.future.futureValue
+        // this can take a bit of time worst case but is often swift
+        awaitCond(portClosed())
+        completeRequest.open()
+
+        total.futureValue should ===(100) // connection
+
+      } finally {
+        TestKit.shutdownActorSystem(serverSystem)
+        TestKit.shutdownActorSystem(clientSystem)
       }
-
-      val total = Source(immutable.Iterable.fill(1000)(ByteString(0)))
-        .via(Tcp().outgoingConnection(address))
-        .runFold(0)(_ + _.size)
-
-      Await.result(total, 3.seconds) should ===(1000)
     }
 
     "shut down properly even if some accepted connection Flows have not been subscribed to" in assertAllStagesStopped {
@@ -525,24 +589,27 @@ class TcpSpec extends StreamSpec("akka.stream.materializer.subscription-timeout.
         firstClientConnected.trySuccess(())
         conn
       }).grouped(2).take(1).map(_.head)
-      Tcp().bind(address.getHostName, address.getPort)
-        .via(takeTwoAndDropSecond)
-        .runForeach(_.flow.join(Flow[ByteString]).run())
 
-      val folder = Source(immutable.Iterable.fill(100)(ByteString(0)))
+      val (serverBound, serverDone) = Tcp().bind(address.getHostName, address.getPort)
+        .viaMat(takeTwoAndDropSecond)(Keep.left)
+        .toMat(Sink.foreach(_.flow.join(Flow[ByteString]).run()))(Keep.both)
+        .run()
+
+      // make sure server has started
+      serverBound.futureValue
+
+      val connectAndCountBytes = Source(immutable.Iterable.fill(100)(ByteString(0)))
         .via(Tcp().outgoingConnection(address))
         .fold(0)(_ + _.size).toMat(Sink.head)(Keep.right)
 
-      val total = folder.run()
+      val total = connectAndCountBytes.run()
 
       awaitAssert(firstClientConnected.future, 2.seconds)
-      val rejected = folder.run()
 
-      Await.result(total, 10.seconds) should ===(100)
+      val rejected = connectAndCountBytes.run()
+      total.futureValue(Timeout(10.seconds)) should ===(100)
 
-      a[StreamTcpException] should be thrownBy {
-        Await.result(rejected, 5.seconds) should ===(100)
-      }
+      rejected.failed.futureValue(Timeout(5.seconds)) shouldBe a[StreamTcpException]
     }
 
     "not thrown on unbind after system has been shut down" in {
@@ -555,16 +622,17 @@ class TcpSpec extends StreamSpec("akka.stream.materializer.subscription-timeout.
         val bindingFuture = Tcp().bindAndHandle(Flow[ByteString], address.getHostName, address.getPort)(mat2)
 
         // Ensure server is running
-        Await.ready(bindingFuture, remainingOrDefault)
+        bindingFuture.futureValue
         // and is possible to communicate with
-        Await.result(
-          Source.single(ByteString(0)).via(Tcp().outgoingConnection(address)).runWith(Sink.ignore),
-          3.seconds)
+        Source.single(ByteString(0))
+          .via(Tcp().outgoingConnection(address))
+          .runWith(Sink.ignore)
+          .futureValue
 
-        Await.result(sys2.terminate(), 3.seconds)
+        sys2.terminate().futureValue
 
-        val binding = Await.result(bindingFuture, 3.seconds)
-        Await.result(binding.unbind(), 3.seconds)
+        val binding = bindingFuture.futureValue
+        binding.unbind().futureValue
       } finally sys2.terminate()
     }
   }

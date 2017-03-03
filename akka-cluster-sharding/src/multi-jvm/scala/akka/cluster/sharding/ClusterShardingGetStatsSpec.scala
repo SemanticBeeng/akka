@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.cluster.sharding
 
@@ -50,12 +50,15 @@ object ClusterShardingGetStatsSpecConfig extends MultiNodeConfig {
     akka.actor.provider = "cluster"
     akka.remote.log-remote-lifecycle-events = off
     akka.log-dead-letters-during-shutdown = off
-    akka.cluster.metrics.enabled = off
     akka.cluster.auto-down-unreachable-after = 0s
     akka.cluster.sharding {
       state-store-mode = "ddata"
       updating-state-timeout = 2s
       waiting-for-state-timeout = 2s
+    }
+    akka.cluster.sharding.distributed-data.durable.lmdb {
+      dir = target/ClusterShardingGetStatsSpec/sharding-ddata
+      map-size = 10 MiB
     }
     akka.actor.warn-about-java-serializer-usage=false
     """))

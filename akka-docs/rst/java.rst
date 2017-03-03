@@ -6,17 +6,17 @@ Java Documentation
 .. toctree::
    :maxdepth: 2
 
+   security/index
    intro/index-java
    general/index
    java/index-actors
-   java/lambda-index-actors
    java/index-futures
    java/index-network
    java/index-utilities
    java/stream/index
    java/http/index
    java/howto
-   experimental/index-java
+   java/scala-compat
    dev/index
    project/index
    additional/index

@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.pattern
 
@@ -438,9 +438,6 @@ private[akka] final class PromiseActorRef private (val provider: ActorRefProvide
   import AbstractPromiseActorRef.{ stateOffset, watchedByOffset }
   import PromiseActorRef._
 
-  @deprecated("Use the full constructor", "2.4")
-  def this(provider: ActorRefProvider, result: Promise[Any]) = this(provider, result, "unknown")
-
   // This is necessary for weaving the PromiseActorRef into the asked message, i.e. the replyTo pattern.
   @volatile var messageClassName = _mcn
 
@@ -530,7 +527,7 @@ private[akka] final class PromiseActorRef private (val provider: ActorRefProvide
   override def !(message: Any)(implicit sender: ActorRef = Actor.noSender): Unit = state match {
     case Stopped | _: StoppedWithPath ⇒ provider.deadLetters ! message
     case _ ⇒
-      if (message == null) throw new InvalidMessageException("Message is null")
+      if (message == null) throw InvalidMessageException("Message is null")
       if (!(result.tryComplete(
         message match {
           case Status.Success(r) ⇒ Success(r)
@@ -592,7 +589,7 @@ private[akka] object PromiseActorRef {
   private case object Stopped
   private final case class StoppedWithPath(path: ActorPath)
 
-  private val ActorStopResult = Failure(new ActorKilledException("Stopped"))
+  private val ActorStopResult = Failure(ActorKilledException("Stopped"))
 
   def apply(provider: ActorRefProvider, timeout: Timeout, targetName: Any, messageClassName: String, sender: ActorRef = Actor.noSender): PromiseActorRef = {
     val result = Promise[Any]()
@@ -607,7 +604,4 @@ private[akka] object PromiseActorRef {
     a
   }
 
-  @deprecated("Use apply with messageClassName and sender parameters", "2.4")
-  def apply(provider: ActorRefProvider, timeout: Timeout, targetName: String): PromiseActorRef =
-    apply(provider, timeout, targetName, "unknown", Actor.noSender)
 }

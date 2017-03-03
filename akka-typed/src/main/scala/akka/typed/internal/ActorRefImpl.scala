@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2016 Lightbend Inc. <http://www.lightbend.com/>
+ * Copyright (C) 2016-2017 Lightbend Inc. <http://www.lightbend.com/>
  */
 package akka.typed
 package internal
@@ -136,7 +136,7 @@ private[typed] object WatchableRef {
  * promises are made about delivery delays: as long as the Future is not ready
  * messages will be queued, afterwards they get sent without waiting.
  */
-private[typed] class FutureRef[-T](_p: a.ActorPath, bufferSize: Int, f: Future[ActorRef[T]]) extends WatchableRef[T](_p) {
+private[typed] class FutureRef[-T](_path: a.ActorPath, bufferSize: Int, f: Future[ActorRef[T]]) extends WatchableRef[T](_path) {
   import FutureRef._
 
   // Keep in synch with `targetOffset` in companion (could also change on mixing in a trait).

@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.cluster.sharding
 
@@ -18,6 +18,8 @@ import scala.collection.immutable
 import scala.concurrent.duration._
 import scala.concurrent.Future
 import scala.reflect.ClassTag
+import scala.concurrent.Promise
+import akka.Done
 
 /**
  * @see [[ClusterSharding$ ClusterSharding extension]]
@@ -35,9 +37,11 @@ object ShardRegion {
     coordinatorPath:    String,
     extractEntityId:    ShardRegion.ExtractEntityId,
     extractShardId:     ShardRegion.ExtractShardId,
-    handOffStopMessage: Any): Props =
+    handOffStopMessage: Any,
+    replicator:         ActorRef,
+    majorityMinCap:     Int): Props =
     Props(new ShardRegion(typeName, Some(entityProps), settings, coordinatorPath, extractEntityId,
-      extractShardId, handOffStopMessage)).withDeploy(Deploy.local)
+      extractShardId, handOffStopMessage, replicator, majorityMinCap)).withDeploy(Deploy.local)
 
   /**
    * INTERNAL API
@@ -49,9 +53,11 @@ object ShardRegion {
     settings:        ClusterShardingSettings,
     coordinatorPath: String,
     extractEntityId: ShardRegion.ExtractEntityId,
-    extractShardId:  ShardRegion.ExtractShardId): Props =
-    Props(new ShardRegion(typeName, None, settings, coordinatorPath, extractEntityId, extractShardId, PoisonPill))
-      .withDeploy(Deploy.local)
+    extractShardId:  ShardRegion.ExtractShardId,
+    replicator:      ActorRef,
+    majorityMinCap:  Int): Props =
+    Props(new ShardRegion(typeName, None, settings, coordinatorPath, extractEntityId, extractShardId,
+      PoisonPill, replicator, majorityMinCap)).withDeploy(Deploy.local)
 
   /**
    * Marker type of entity identifier (`String`).
@@ -330,20 +336,24 @@ object ShardRegion {
 }
 
 /**
+ * INTERNAL API
+ *
  * This actor creates children entity actors on demand for the shards that it is told to be
  * responsible for. It delegates messages targeted to other shards to the responsible
  * `ShardRegion` actor on other nodes.
  *
  * @see [[ClusterSharding$ ClusterSharding extension]]
  */
-class ShardRegion(
+private[akka] class ShardRegion(
   typeName:           String,
   entityProps:        Option[Props],
   settings:           ClusterShardingSettings,
   coordinatorPath:    String,
   extractEntityId:    ShardRegion.ExtractEntityId,
   extractShardId:     ShardRegion.ExtractShardId,
-  handOffStopMessage: Any) extends Actor with ActorLogging {
+  handOffStopMessage: Any,
+  replicator:         ActorRef,
+  majorityMinCap:     Int) extends Actor with ActorLogging {
 
   import ShardCoordinator.Internal._
   import ShardRegion._
@@ -372,6 +382,15 @@ class ShardRegion(
   val retryTask = context.system.scheduler.schedule(retryInterval, retryInterval, self, Retry)
   var retryCount = 0
 
+  // for CoordinatedShutdown
+  val gracefulShutdownProgress = Promise[Done]()
+  CoordinatedShutdown(context.system).addTask(
+    CoordinatedShutdown.PhaseClusterShardingShutdownRegion,
+    "region-shutdown") { () ⇒
+      self ! GracefulShutdown
+      gracefulShutdownProgress.future
+    }
+
   // subscribe to MemberEvent, re-subscribe when restart
   override def preStart(): Unit = {
     cluster.subscribe(self, classOf[MemberEvent])
@@ -380,6 +399,7 @@ class ShardRegion(
   override def postStop(): Unit = {
     super.postStop()
     cluster.unsubscribe(self)
+    gracefulShutdownProgress.trySuccess(Done)
     retryTask.cancel()
   }
 
@@ -390,6 +410,14 @@ class ShardRegion(
 
   def coordinatorSelection: Option[ActorSelection] =
     membersByAge.headOption.map(m ⇒ context.actorSelection(RootActorPath(m.address) + coordinatorPath))
+
+  /**
+   * When leaving the coordinator singleton is started rather quickly on next
+   * oldest node and therefore it is good to send the GracefulShutdownReq to
+   * the likely locations of the coordinator.
+   */
+  def gracefulShutdownCoordinatorSelections: List[ActorSelection] =
+    membersByAge.take(2).toList.map(m ⇒ context.actorSelection(RootActorPath(m.address) + coordinatorPath))
 
   var coordinator: Option[ActorRef] = None
 
@@ -415,6 +443,7 @@ class ShardRegion(
     case query: ShardRegionQuery                 ⇒ receiveQuery(query)
     case msg: RestartShard                       ⇒ deliverMessage(msg, sender())
     case msg if extractEntityId.isDefinedAt(msg) ⇒ deliverMessage(msg, sender())
+    case unknownMsg                              ⇒ log.warning("Message does not have an extractor defined in shard [{}] so it was ignored: {}", typeName, unknownMsg)
   }
 
   def receiveClusterState(state: CurrentClusterState): Unit = {
@@ -603,8 +632,9 @@ class ShardRegion(
   }
 
   private def tryCompleteGracefulShutdown() =
-    if (gracefulShutdownInProgress && shards.isEmpty && shardBuffers.isEmpty)
+    if (gracefulShutdownInProgress && shards.isEmpty && shardBuffers.isEmpty) {
       context.stop(self) // all shards have been rebalanced, complete graceful shutdown
+    }
 
   def register(): Unit = {
     coordinatorSelection.foreach(_ ! registrationMessage)
@@ -741,7 +771,9 @@ class ShardRegion(
                 settings,
                 extractEntityId,
                 extractShardId,
-                handOffStopMessage).withDispatcher(context.props.dispatcher),
+                handOffStopMessage,
+                replicator,
+                majorityMinCap).withDispatcher(context.props.dispatcher),
               name))
             shardsByRef = shardsByRef.updated(shard, id)
             shards = shards.updated(id, shard)
@@ -755,7 +787,8 @@ class ShardRegion(
     }
   }
 
-  def sendGracefulShutdownToCoordinator(): Unit =
+  def sendGracefulShutdownToCoordinator(): Unit = {
     if (gracefulShutdownInProgress)
-      coordinator.foreach(_ ! GracefulShutdownReq(self))
+      gracefulShutdownCoordinatorSelections.foreach(_ ! GracefulShutdownReq(self))
+  }
 }

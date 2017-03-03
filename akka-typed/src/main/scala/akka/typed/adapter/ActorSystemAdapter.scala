@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2016 Lightbend Inc. <http://www.lightbend.com/>
+ * Copyright (C) 2016-2017 Lightbend Inc. <http://www.lightbend.com/>
  */
 package akka.typed
 package adapter
@@ -20,6 +20,8 @@ import scala.concurrent.Future
 private[typed] class ActorSystemAdapter[-T](val untyped: a.ActorSystemImpl)
   extends ActorRef[T](a.RootActorPath(a.Address("akka", untyped.name)) / "user")
   with ActorSystem[T] with internal.ActorRefImpl[T] {
+
+  import ActorSystemAdapter._
 
   // Members declared in akka.typed.ActorRef
   override def tell(msg: T): Unit = untyped.guardian ! msg
@@ -52,6 +54,9 @@ private[typed] class ActorSystemAdapter[-T](val untyped: a.ActorSystemImpl)
   override def uptime: Long = untyped.uptime
   override def printTree: String = untyped.printTree
 
+  override def receptionist: ActorRef[patterns.Receptionist.Command] =
+    ReceptionistExtension(untyped).receptionist
+
   import akka.dispatch.ExecutionContexts.sameThreadExecutionContext
 
   override def terminate(): scala.concurrent.Future[akka.typed.Terminated] =
@@ -68,4 +73,10 @@ private[typed] class ActorSystemAdapter[-T](val untyped: a.ActorSystemImpl)
 
 private[typed] object ActorSystemAdapter {
   def apply(untyped: a.ActorSystem): ActorSystem[Nothing] = new ActorSystemAdapter(untyped.asInstanceOf[a.ActorSystemImpl])
+
+  object ReceptionistExtension extends a.ExtensionKey[ReceptionistExtension]
+  class ReceptionistExtension(system: a.ExtendedActorSystem) extends a.Extension {
+    val receptionist: ActorRef[patterns.Receptionist.Command] =
+      ActorRefAdapter(system.systemActorOf(PropsAdapter(patterns.Receptionist.behavior, EmptyDeploymentConfig), "receptionist"))
+  }
 }

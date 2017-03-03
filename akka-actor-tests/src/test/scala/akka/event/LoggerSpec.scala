@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
  */
 package akka.event
 
@@ -51,15 +51,15 @@ object LoggerSpec {
       }
     """).withFallback(AkkaSpec.testConf)
 
-  val ticket3165Config = ConfigFactory.parseString("""
+  val ticket3165Config = ConfigFactory.parseString(s"""
       akka {
         stdout-loglevel = "WARNING"
         loglevel = "DEBUG"
-        loggers = ["akka.event.LoggerSpec$TestLogger1"]
+        loggers = ["akka.event.LoggerSpec$$TestLogger1"]
         actor {
           serialize-messages = on
           serialization-bindings {
-            "akka.event.Logging$LogEvent" = bytes
+            "akka.event.Logging$$LogEvent" = bytes
             "java.io.Serializable" = java
           }
         }
