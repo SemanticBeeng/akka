@@ -1,6 +1,7 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.cluster
 
 import akka.testkit._
@@ -57,7 +58,7 @@ class ClusterDeployerSpec extends AkkaSpec(ClusterDeployerSpec.deployerConf) {
           service,
           deployment.get.config,
           ClusterRouterPool(RoundRobinPool(20), ClusterRouterPoolSettings(
-            totalInstances = 20, maxInstancesPerNode = 3, allowLocalRoutees = false, useRole = None)),
+            totalInstances = 20, maxInstancesPerNode = 3, allowLocalRoutees = false)),
           ClusterScope,
           Deploy.NoDispatcherGiven,
           Deploy.NoMailboxGiven)))
@@ -73,7 +74,7 @@ class ClusterDeployerSpec extends AkkaSpec(ClusterDeployerSpec.deployerConf) {
           service,
           deployment.get.config,
           ClusterRouterGroup(RoundRobinGroup(List("/user/myservice")), ClusterRouterGroupSettings(
-            totalInstances = 20, routeesPaths = List("/user/myservice"), allowLocalRoutees = false, useRole = None)),
+            totalInstances = 20, routeesPaths = List("/user/myservice"), allowLocalRoutees = false)),
           ClusterScope,
           "mydispatcher",
           "mymailbox")))

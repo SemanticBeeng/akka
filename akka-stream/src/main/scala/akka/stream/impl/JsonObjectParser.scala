@@ -1,8 +1,10 @@
 /**
- * Copyright (C) 2014-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2014-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.stream.impl
 
+import akka.annotation.InternalApi
 import akka.stream.scaladsl.Framing.FramingException
 import akka.util.ByteString
 
@@ -11,7 +13,7 @@ import scala.annotation.switch
 /**
  * INTERNAL API: Use [[akka.stream.scaladsl.JsonFraming]] instead.
  */
-private[akka] object JsonObjectParser {
+@InternalApi private[akka] object JsonObjectParser {
 
   final val SquareBraceStart = '['.toByte
   final val SquareBraceEnd = ']'.toByte
@@ -42,7 +44,7 @@ private[akka] object JsonObjectParser {
  *
  * Leading whitespace between elements will be trimmed.
  */
-private[akka] class JsonObjectParser(maximumObjectLength: Int = Int.MaxValue) {
+@InternalApi private[akka] class JsonObjectParser(maximumObjectLength: Int = Int.MaxValue) {
   import JsonObjectParser._
 
   private var buffer: ByteString = ByteString.empty
@@ -119,7 +121,7 @@ private[akka] class JsonObjectParser(maximumObjectLength: Int = Int.MaxValue) {
       pos += 1
       trimFront += 1
     } else if (input == Backslash) {
-      if (lastInput == Backslash) isStartOfEscapeSequence = false
+      if (lastInput == Backslash & isStartOfEscapeSequence) isStartOfEscapeSequence = false
       else isStartOfEscapeSequence = true
       pos += 1
     } else if (input == DoubleQuote) {

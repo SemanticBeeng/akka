@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
 
 package akka.cluster.singleton
@@ -49,21 +49,25 @@ object ClusterSingletonManagerSpec extends MultiNodeConfig {
   nodeConfig(first, second, third, fourth, fifth, sixth)(
     ConfigFactory.parseString("akka.cluster.roles =[worker]"))
 
+  //#singleton-message-classes
   object PointToPointChannel {
+    case object UnregistrationOk
+    //#singleton-message-classes
     case object RegisterConsumer
     case object UnregisterConsumer
     case object RegistrationOk
     case object UnexpectedRegistration
-    case object UnregistrationOk
     case object UnexpectedUnregistration
     case object Reset
     case object ResetOk
+    //#singleton-message-classes
   }
+  //#singleton-message-classes
 
   /**
    * This channel is extremely strict with regards to
    * registration and unregistration of consumer to
-   * be able to detect misbehaviour (e.g. two active
+   * be able to detect misbehavior (e.g. two active
    * singleton instances).
    */
   class PointToPointChannel extends Actor with ActorLogging {
@@ -105,12 +109,14 @@ object ClusterSingletonManagerSpec extends MultiNodeConfig {
     }
   }
 
+  //#singleton-message-classes
   object Consumer {
     case object End
     case object GetCurrent
     case object Ping
     case object Pong
   }
+  //#singleton-message-classes
 
   /**
    * The Singleton actor
@@ -136,8 +142,8 @@ object ClusterSingletonManagerSpec extends MultiNodeConfig {
       case n: Int ⇒
         current = n
         delegateTo ! n
-      case x @ (RegistrationOk | UnexpectedRegistration) ⇒
-        delegateTo ! x
+      case message @ (RegistrationOk | UnexpectedRegistration) ⇒
+        delegateTo ! message
       case GetCurrent ⇒
         sender() ! current
       //#consumer-end
@@ -222,12 +228,26 @@ class ClusterSingletonManagerSpec extends MultiNodeSpec(ClusterSingletonManagerS
 
   def createSingletonProxy(): ActorRef = {
     //#create-singleton-proxy
-    system.actorOf(
+    val proxy = system.actorOf(
       ClusterSingletonProxy.props(
         singletonManagerPath = "/user/consumer",
         settings = ClusterSingletonProxySettings(system).withRole("worker")),
       name = "consumerProxy")
     //#create-singleton-proxy
+    proxy
+  }
+
+  def createSingletonProxyDc(): ActorRef = {
+    //#create-singleton-proxy-dc
+    val proxyDcB = system.actorOf(
+      ClusterSingletonProxy.props(
+        singletonManagerPath = "/user/consumer",
+        settings = ClusterSingletonProxySettings(system)
+          .withRole("worker")
+          .withDataCenter("B")),
+      name = "consumerProxyDcB")
+    //#create-singleton-proxy-dc
+    proxyDcB
   }
 
   def verifyProxyMsg(oldest: RoleName, proxyNode: RoleName, msg: Int): Unit = {
@@ -314,7 +334,7 @@ class ClusterSingletonManagerSpec extends MultiNodeSpec(ClusterSingletonManagerS
       memberProbe.expectMsgClass(classOf[CurrentClusterState])
 
       runOn(controller) {
-        // watch that it is not terminated, which would indicate misbehaviour
+        // watch that it is not terminated, which would indicate misbehavior
         watch(system.actorOf(Props[PointToPointChannel], "queue"))
       }
       enterBarrier("queue-started")

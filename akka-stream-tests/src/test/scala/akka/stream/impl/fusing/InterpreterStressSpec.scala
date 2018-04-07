@@ -1,15 +1,15 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.stream.impl.fusing
 
-import akka.stream.impl.ConstantFun
 import akka.stream.Supervision
 import akka.stream.testkit.StreamSpec
 import akka.testkit.LongRunningTest
+import akka.util.ConstantFun
 
 class InterpreterStressSpec extends StreamSpec with GraphInterpreterSpecKit {
-  import Supervision.stoppingDecider
 
   val chainLength = 1000 * 1000
   val halfLength = chainLength / 2
@@ -127,3 +127,4 @@ class InterpreterStressSpec extends StreamSpec with GraphInterpreterSpecKit {
   }
 
 }
+

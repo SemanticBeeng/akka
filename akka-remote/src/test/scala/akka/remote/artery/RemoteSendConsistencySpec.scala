@@ -1,21 +1,53 @@
 /**
- * Copyright (C) 2016-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2016-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.remote.artery
 
-import akka.actor.{ Actor, ActorIdentity, ActorRef, ActorSystem, Deploy, Identify, PoisonPill, Props, RootActorPath }
-import akka.remote.RARP
-import akka.testkit.{ AkkaSpec, ImplicitSender, TestActors, TestProbe }
+import akka.actor.{ Actor, ActorIdentity, ActorRef, Deploy, Identify, PoisonPill, Props, RootActorPath }
+import akka.testkit.{ ImplicitSender, TestActors, TestProbe }
 import com.typesafe.config.{ Config, ConfigFactory }
 
 import scala.concurrent.duration._
+import akka.actor.ActorSelection
 
-class RemoteSendConsistencySpec extends AbstractRemoteSendConsistencySpec(ArterySpecSupport.defaultConfig)
+class ArteryUpdSendConsistencyWithOneLaneSpec extends AbstractRemoteSendConsistencySpec(ConfigFactory.parseString("""
+      akka.remote.artery.advanced.outbound-lanes = 1
+      akka.remote.artery.advanced.inbound-lanes = 1
+    """).withFallback(ArterySpecSupport.defaultConfig))
 
-class RemoteSendConsistencyWithThreeLanesSpec extends AbstractRemoteSendConsistencySpec(
+class ArteryUpdSendConsistencyWithThreeLanesSpec extends AbstractRemoteSendConsistencySpec(
   ConfigFactory.parseString("""
       akka.remote.artery.advanced.outbound-lanes = 3
       akka.remote.artery.advanced.inbound-lanes = 3
+    """).withFallback(ArterySpecSupport.defaultConfig))
+
+class ArteryTcpSendConsistencyWithOneLaneSpec extends AbstractRemoteSendConsistencySpec(
+  ConfigFactory.parseString("""
+      akka.remote.artery.transport = tcp
+      akka.remote.artery.advanced.outbound-lanes = 1
+      akka.remote.artery.advanced.inbound-lanes = 1
+    """).withFallback(ArterySpecSupport.defaultConfig))
+
+class ArteryTcpSendConsistencyWithThreeLanesSpec extends AbstractRemoteSendConsistencySpec(
+  ConfigFactory.parseString("""
+      akka.remote.artery.transport = tcp
+      akka.remote.artery.advanced.outbound-lanes = 3
+      akka.remote.artery.advanced.inbound-lanes = 3
+    """).withFallback(ArterySpecSupport.defaultConfig))
+
+class ArteryTlsTcpSendConsistencyWithOneLaneSpec extends AbstractRemoteSendConsistencySpec(
+  ConfigFactory.parseString("""
+      akka.remote.artery.transport = tls-tcp
+      akka.remote.artery.advanced.outbound-lanes = 1
+      akka.remote.artery.advanced.inbound-lanes = 1
+    """).withFallback(ArterySpecSupport.defaultConfig))
+
+class ArteryTlsTcpSendConsistencyWithThreeLanesSpec extends AbstractRemoteSendConsistencySpec(
+  ConfigFactory.parseString("""
+      akka.remote.artery.transport = tls-tcp
+      akka.remote.artery.advanced.outbound-lanes = 1
+      akka.remote.artery.advanced.inbound-lanes = 1
     """).withFallback(ArterySpecSupport.defaultConfig))
 
 abstract class AbstractRemoteSendConsistencySpec(config: Config) extends ArteryMultiNodeSpec(config) with ImplicitSender {
@@ -33,18 +65,26 @@ abstract class AbstractRemoteSendConsistencySpec(config: Config) extends ArteryM
         }
       }), "echo")
 
-      val remoteRef = {
+      val echoSel = system.actorSelection(rootB / "user" / "echo")
+      val echoRef = {
         system.actorSelection(rootB / "user" / "echo") ! Identify(None)
         expectMsgType[ActorIdentity](5.seconds).ref.get
       }
 
-      remoteRef ! "ping"
+      echoRef ! "ping"
       expectMsg("pong")
 
-      remoteRef ! "ping"
+      echoRef ! "ping"
       expectMsg("pong")
 
-      remoteRef ! "ping"
+      echoRef ! "ping"
+      expectMsg("pong")
+
+      // and actorSelection
+      echoSel ! "ping"
+      expectMsg("pong")
+
+      echoSel ! "ping"
       expectMsg("pong")
     }
 
@@ -113,6 +153,45 @@ abstract class AbstractRemoteSendConsistencySpec(config: Config) extends ArteryM
         expectMsg("success")
         expectMsg("success")
         expectMsg("success")
+      }
+    }
+
+    "be able to send messages with actorSelection concurrently preserving order" in {
+      systemB.actorOf(TestActors.echoActorProps, "echoA2")
+      systemB.actorOf(TestActors.echoActorProps, "echoB2")
+      systemB.actorOf(TestActors.echoActorProps, "echoC2")
+
+      val selA = system.actorSelection(rootB / "user" / "echoA2")
+      val selB = system.actorSelection(rootB / "user" / "echoB2")
+      val selC = system.actorSelection(rootB / "user" / "echoC2")
+
+      def senderProps(sel: ActorSelection) = Props(new Actor {
+        var counter = 1000
+        sel ! counter
+
+        override def receive: Receive = {
+          case i: Int ⇒
+            if (i != counter) testActor ! s"Failed, expected $counter got $i"
+            else if (counter == 0) {
+              testActor ! "success2"
+              context.stop(self)
+            } else {
+              counter -= 1
+              sel ! counter
+            }
+        }
+      }).withDeploy(Deploy.local)
+
+      system.actorOf(senderProps(selA))
+      system.actorOf(senderProps(selB))
+      system.actorOf(senderProps(selC))
+      system.actorOf(senderProps(selA))
+
+      within(10.seconds) {
+        expectMsg("success2")
+        expectMsg("success2")
+        expectMsg("success2")
+        expectMsg("success2")
       }
     }
 

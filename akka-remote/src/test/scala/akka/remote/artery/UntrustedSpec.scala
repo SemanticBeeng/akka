@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
 
 package akka.remote.artery
@@ -9,15 +9,12 @@ import com.typesafe.config.ConfigFactory
 import akka.actor.Actor
 import akka.actor.ActorIdentity
 import akka.actor.ActorRef
-import akka.actor.ActorSystem
 import akka.actor.Deploy
-import akka.actor.ExtendedActorSystem
 import akka.actor.Identify
 import akka.actor.PoisonPill
 import akka.actor.Props
 import akka.actor.RootActorPath
 import akka.actor.Terminated
-import akka.testkit.AkkaSpec
 import akka.testkit.ImplicitSender
 import akka.testkit.TestProbe
 import akka.actor.ActorSelection
@@ -74,21 +71,21 @@ class UntrustedSpec extends ArteryMultiNodeSpec(UntrustedSpec.config) with Impli
   import UntrustedSpec._
 
   val client = newRemoteSystem(name = Some("UntrustedSpec-client"))
-  val addr = RARP(system).provider.getDefaultAddress
+  val address = RARP(system).provider.getDefaultAddress
 
   val receptionist = system.actorOf(Props(classOf[Receptionist], testActor), "receptionist")
 
   lazy val remoteDaemon = {
     {
       val p = TestProbe()(client)
-      client.actorSelection(RootActorPath(addr) / receptionist.path.elements).tell(IdentifyReq("/remote"), p.ref)
+      client.actorSelection(RootActorPath(address) / receptionist.path.elements).tell(IdentifyReq("/remote"), p.ref)
       p.expectMsgType[ActorIdentity].ref.get
     }
   }
 
   lazy val target2 = {
     val p = TestProbe()(client)
-    client.actorSelection(RootActorPath(addr) / receptionist.path.elements).tell(
+    client.actorSelection(RootActorPath(address) / receptionist.path.elements).tell(
       IdentifyReq("child2"), p.ref)
     p.expectMsgType[ActorIdentity].ref.get
   }
@@ -99,7 +96,7 @@ class UntrustedSpec extends ArteryMultiNodeSpec(UntrustedSpec.config) with Impli
   "UntrustedMode" must {
 
     "allow actor selection to configured white list" in {
-      val sel = client.actorSelection(RootActorPath(addr) / receptionist.path.elements)
+      val sel = client.actorSelection(RootActorPath(address) / receptionist.path.elements)
       sel ! "hello"
       expectMsg("hello")
     }
@@ -141,14 +138,14 @@ class UntrustedSpec extends ArteryMultiNodeSpec(UntrustedSpec.config) with Impli
     }
 
     "discard actor selection" in {
-      val sel = client.actorSelection(RootActorPath(addr) / testActor.path.elements)
+      val sel = client.actorSelection(RootActorPath(address) / testActor.path.elements)
       sel ! "hello"
       expectNoMsg(1.second)
     }
 
     "discard actor selection with non root anchor" in {
       val p = TestProbe()(client)
-      client.actorSelection(RootActorPath(addr) / receptionist.path.elements).tell(
+      client.actorSelection(RootActorPath(address) / receptionist.path.elements).tell(
         Identify(None), p.ref)
       val clientReceptionistRef = p.expectMsgType[ActorIdentity].ref.get
 
@@ -158,19 +155,19 @@ class UntrustedSpec extends ArteryMultiNodeSpec(UntrustedSpec.config) with Impli
     }
 
     "discard actor selection to child of matching white list" in {
-      val sel = client.actorSelection(RootActorPath(addr) / receptionist.path.elements / "child1")
+      val sel = client.actorSelection(RootActorPath(address) / receptionist.path.elements / "child1")
       sel ! "hello"
       expectNoMsg(1.second)
     }
 
     "discard actor selection with wildcard" in {
-      val sel = client.actorSelection(RootActorPath(addr) / receptionist.path.elements / "*")
+      val sel = client.actorSelection(RootActorPath(address) / receptionist.path.elements / "*")
       sel ! "hello"
       expectNoMsg(1.second)
     }
 
     "discard actor selection containing harmful message" in {
-      val sel = client.actorSelection(RootActorPath(addr) / receptionist.path.elements)
+      val sel = client.actorSelection(RootActorPath(address) / receptionist.path.elements)
       sel ! PoisonPill
       expectNoMsg(1.second)
     }

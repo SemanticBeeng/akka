@@ -1,17 +1,17 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.stream.impl.fusing
 
-import akka.stream.impl.ConstantFun
 import akka.stream.stage._
 import akka.stream.testkit.StreamSpec
 import akka.testkit.EventFilter
 import akka.stream._
 import akka.stream.impl.fusing.GraphStages.SimpleLinearGraphStage
+import akka.util.ConstantFun
 
 class InterpreterSpec extends StreamSpec with GraphInterpreterSpecKit {
-  import Supervision.stoppingDecider
 
   /*
    * These tests were written for the previous version of the interpreter, the so called OneBoundedInterpreter.

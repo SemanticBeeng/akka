@@ -1,12 +1,14 @@
 /**
- * Copyright (C) 2016-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2016-2018 Lightbend Inc. <https://www.lightbend.com>
  */
 package akka.remote.artery
 
 import java.io.File
-import java.io.FileOutputStream
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.nio.file.Files
+import java.time.Instant
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 import akka.actor.ActorSystem
 
@@ -17,6 +19,7 @@ import scala.util.Try
  * results can be understood later.
  */
 trait BenchmarkFileReporter {
+  def testName: String
   def reportResults(result: String): Unit
   def close(): Unit
 }
@@ -27,20 +30,24 @@ object BenchmarkFileReporter {
     target
   }
 
-  def apply(testName: String, system: ActorSystem): BenchmarkFileReporter =
+  val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd-HH-mm-ss")
+
+  def apply(test: String, system: ActorSystem): BenchmarkFileReporter =
     new BenchmarkFileReporter {
+      override val testName = test
+
       val gitCommit = {
         import sys.process._
         Try("git describe".!!.trim).getOrElse("[unknown]")
       }
       val testResultFile: File = {
-        val format = new SimpleDateFormat("yyyy-MM-dd-HH-mm-ss")
-        val fileName = s"${format.format(new Date())}-Artery-$testName-$gitCommit-results.txt"
+        val timestamp = formatter.format(LocalDateTime.ofInstant(Instant.now(), ZoneId.systemDefault()))
+        val fileName = s"$timestamp-Artery-$testName-$gitCommit-results.txt"
         new File(targetDirectory, fileName)
       }
       val config = system.settings.config
 
-      val fos = new FileOutputStream(testResultFile)
+      val fos = Files.newOutputStream(testResultFile.toPath)
       reportResults(s"Git commit: $gitCommit")
 
       val settingsToReport =

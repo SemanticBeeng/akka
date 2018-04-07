@@ -1,6 +1,7 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.routing
 
 import akka.actor.Actor
@@ -149,8 +150,8 @@ private[akka] class RouterActor extends Actor {
 
   val routingLogicController: Option[ActorRef] = cell.routerConfig.routingLogicController(
     cell.router.logic).map(props ⇒ context.actorOf(
-    props.withDispatcher(context.props.dispatcher),
-    name = "routingLogicController"))
+      props.withDispatcher(context.props.dispatcher),
+      name = "routingLogicController"))
 
   def receive = {
     case GetRoutees ⇒

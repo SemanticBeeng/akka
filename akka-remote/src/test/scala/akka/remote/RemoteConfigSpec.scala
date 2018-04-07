@@ -1,6 +1,7 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.remote
 
 import language.postfixOps
@@ -70,7 +71,7 @@ class RemoteConfigSpec extends AkkaSpec(
 
       TransportFailureDetectorImplementationClass should ===(classOf[DeadlineFailureDetector].getName)
       TransportHeartBeatInterval should ===(4.seconds)
-      TransportFailureDetectorConfig.getMillisDuration("acceptable-heartbeat-pause") should ===(16.seconds)
+      TransportFailureDetectorConfig.getMillisDuration("acceptable-heartbeat-pause") should ===(120.seconds)
 
     }
 

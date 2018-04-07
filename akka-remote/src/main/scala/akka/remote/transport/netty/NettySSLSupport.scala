@@ -1,10 +1,10 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
 
 package akka.remote.transport.netty
 
-import java.io.{ FileInputStream, FileNotFoundException, IOException }
+import java.io.{ FileNotFoundException, IOException }
 import java.security._
 import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.{ KeyManagerFactory, SSLContext, TrustManagerFactory }
@@ -18,6 +18,8 @@ import org.jboss.netty.handler.ssl.SslHandler
 
 import scala.annotation.tailrec
 import scala.util.Try
+import java.nio.file.Files
+import java.nio.file.Paths
 
 /**
  * INTERNAL API
@@ -54,7 +56,7 @@ private[akka] class SSLSettings(config: Config) {
     try {
       def loadKeystore(filename: String, password: String): KeyStore = {
         val keyStore = KeyStore.getInstance(KeyStore.getDefaultType)
-        val fin = new FileInputStream(filename)
+        val fin = Files.newInputStream(Paths.get(filename))
         try keyStore.load(fin, password.toCharArray) finally Try(fin.close())
         keyStore
       }

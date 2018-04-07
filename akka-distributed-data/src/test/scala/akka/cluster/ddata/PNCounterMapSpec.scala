@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
 
 package akka.cluster.ddata
@@ -44,6 +44,24 @@ class PNCounterMapSpec extends WordSpec with Matchers {
       // but if there is a conflicting update the entry is not removed
       val m4 = merged1.increment(node2, "b", 10)
       (m3 merge m4).entries should be(Map("a" → 1, "b" → 13, "c" → 7))
+    }
+
+    "be able to work with deltas" in {
+      val m1 = PNCounterMap().increment(node1, "a", 1).increment(node1, "b", 3).increment(node1, "c", 2)
+      val m2 = PNCounterMap().increment(node2, "c", 5)
+
+      val expected = Map("a" → 1, "b" → 3, "c" → 7)
+      (PNCounterMap() mergeDelta m1.delta.get mergeDelta m2.delta.get).entries should be(expected)
+      (PNCounterMap() mergeDelta m2.delta.get mergeDelta m1.delta.get).entries should be(expected)
+
+      val merged1 = m1 merge m2
+
+      val m3 = merged1.resetDelta.remove(node1, "b")
+      (merged1 mergeDelta m3.delta.get).entries should be(Map("a" → 1, "c" → 7))
+
+      // but if there is a conflicting update the entry is not removed
+      val m4 = merged1.resetDelta.increment(node2, "b", 10)
+      (m3 mergeDelta m4.delta.get).entries should be(Map("a" → 1, "b" → 13, "c" → 7))
     }
 
     "have unapply extractor" in {

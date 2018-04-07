@@ -1,6 +1,7 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.persistence.fsm
 
 import akka.actor._
@@ -15,6 +16,7 @@ import scala.concurrent.duration.FiniteDuration
  * Finite State Machine actor trait. Use as follows:
  *
  * <pre>
+ *   object A {
  *     trait State
  *     case class One extends State
  *     case class Two extends State
@@ -28,7 +30,7 @@ import scala.concurrent.duration.FiniteDuration
  *     startWith(One, Data(42))
  *     when(One) {
  *         case Event(SomeMsg, Data(x)) => ...
- *         case Ev(SomeMsg) => ... // convenience when data not needed
+ *         case Event(SomeOtherMsg, _) => ... // convenience when data not needed
  *     }
  *     when(Two, stateTimeout = 5 seconds) { ... }
  *     initialize()
@@ -186,7 +188,7 @@ trait PersistentFSMBase[S, D, E] extends Actor with Listeners with ActorLogging 
   /**
    * Produce change descriptor to stop this FSM actor including specified reason.
    */
-  final def stop(reason: Reason, stateData: D): State = stay using stateData withStopReason (reason)
+  final def stop(reason: Reason, stateData: D): State = stay.copy(stopReason = Some(reason), stateData = stateData)
 
   final class TransformHelper(func: StateFunction) {
     def using(andThen: PartialFunction[State, State]): StateFunction =
@@ -210,7 +212,7 @@ trait PersistentFSMBase[S, D, E] extends Actor with Listeners with ActorLogging 
     if (timers contains name) {
       timers(name).cancel
     }
-    val timer = Timer(name, msg, repeat, timerGen.next)(context)
+    val timer = Timer(name, msg, repeat, timerGen.next, this)(context)
     timer.schedule(self, timeout)
     timers(name) = timer
   }
@@ -411,8 +413,8 @@ trait PersistentFSMBase[S, D, E] extends Actor with Listeners with ActorLogging 
       if (generation == gen) {
         processMsg(StateTimeout, "state timeout")
       }
-    case t @ Timer(name, msg, repeat, gen) ⇒
-      if ((timers contains name) && (timers(name).generation == gen)) {
+    case t @ Timer(name, msg, repeat, gen, owner) ⇒
+      if ((owner eq this) && (timers contains name) && (timers(name).generation == gen)) {
         if (timeoutFuture.isDefined) {
           timeoutFuture.get.cancel()
           timeoutFuture = None
@@ -574,10 +576,10 @@ trait LoggingPersistentFSM[S, D, E] extends PersistentFSMBase[S, D, E] { this: A
   private[akka] abstract override def processEvent(event: Event, source: AnyRef): Unit = {
     if (debugEvent) {
       val srcstr = source match {
-        case s: String            ⇒ s
-        case Timer(name, _, _, _) ⇒ "timer " + name
-        case a: ActorRef          ⇒ a.toString
-        case _                    ⇒ "unknown"
+        case s: String               ⇒ s
+        case Timer(name, _, _, _, _) ⇒ "timer " + name
+        case a: ActorRef             ⇒ a.toString
+        case _                       ⇒ "unknown"
       }
       log.debug("processing {} from {} in state {}", event, srcstr, stateName)
     }
@@ -640,6 +642,32 @@ abstract class AbstractPersistentFSMBase[S, D, E] extends PersistentFSMBase[S, D
   import akka.japi.pf.FI._
   import java.util.{ List ⇒ JList }
   import PersistentFSM._
+
+  /**
+   * Returns this AbstractActor's ActorContext
+   * The ActorContext is not thread safe so do not expose it outside of the
+   * AbstractActor.
+   */
+  def getContext(): AbstractActor.ActorContext = context.asInstanceOf[AbstractActor.ActorContext]
+
+  /**
+   * Returns the ActorRef for this actor.
+   *
+   * Same as `self()`.
+   */
+  def getSelf(): ActorRef = self
+
+  /**
+   * The reference sender Actor of the currently processed message. This is
+   * always a legal destination to send to, even if there is no logical recipient
+   * for the reply, in which case it will be sent to the dead letter mailbox.
+   *
+   * Same as `sender()`.
+   *
+   * WARNING: Only valid within the Actor itself, so do not close over it and
+   * publish it to other threads!
+   */
+  def getSender(): ActorRef = sender()
 
   /**
    * Insert a new StateFunction at the end of the processing chain for the
@@ -718,7 +746,7 @@ abstract class AbstractPersistentFSMBase[S, D, E] extends PersistentFSMBase[S, D
    * called, not only the first one matching.</b>
    */
   final def onTransition(transitionHandler: UnitApply2[S, S]): Unit =
-    onTransition(transitionHandler)
+    super.onTransition(transitionHandler(_: S, _: S))
 
   /**
    * Set handler which is called upon reception of unhandled messages. Calling
@@ -774,7 +802,7 @@ abstract class AbstractPersistentFSMBase[S, D, E] extends PersistentFSMBase[S, D
    * @return the builder with the case statement added
    */
   final def matchEvent[ET](eventType: Class[ET], predicate: TypedPredicate2[ET, D], apply: Apply2[ET, D, State]): FSMStateFunctionBuilder[S, D, E] =
-    new FSMStateFunctionBuilder[S, D, E]().event(eventType, predicate, apply);
+    new FSMStateFunctionBuilder[S, D, E]().event(eventType, predicate, apply)
 
   /**
    * Create an [[akka.japi.pf.FSMStateFunctionBuilder]] with the first case statement set.
@@ -786,7 +814,7 @@ abstract class AbstractPersistentFSMBase[S, D, E] extends PersistentFSMBase[S, D
    * @return the builder with the case statement added
    */
   final def matchEvent[ET](eventType: Class[ET], apply: Apply2[ET, D, State]): FSMStateFunctionBuilder[S, D, E] =
-    new FSMStateFunctionBuilder[S, D, E]().event(eventType, apply);
+    new FSMStateFunctionBuilder[S, D, E]().event(eventType, apply)
 
   /**
    * Create an [[akka.japi.pf.FSMStateFunctionBuilder]] with the first case statement set.
@@ -798,7 +826,7 @@ abstract class AbstractPersistentFSMBase[S, D, E] extends PersistentFSMBase[S, D
    * @return the builder with the case statement added
    */
   final def matchEvent(predicate: TypedPredicate2[AnyRef, D], apply: Apply2[AnyRef, D, State]): FSMStateFunctionBuilder[S, D, E] =
-    new FSMStateFunctionBuilder[S, D, E]().event(predicate, apply);
+    new FSMStateFunctionBuilder[S, D, E]().event(predicate, apply)
 
   /**
    * Create an [[akka.japi.pf.FSMStateFunctionBuilder]] with the first case statement set.
@@ -812,7 +840,7 @@ abstract class AbstractPersistentFSMBase[S, D, E] extends PersistentFSMBase[S, D
    * @return the builder with the case statement added
    */
   final def matchEvent[DT <: D](eventMatches: JList[AnyRef], dataType: Class[DT], apply: Apply2[AnyRef, DT, State]): FSMStateFunctionBuilder[S, D, E] =
-    new FSMStateFunctionBuilder[S, D, E]().event(eventMatches, dataType, apply);
+    new FSMStateFunctionBuilder[S, D, E]().event(eventMatches, dataType, apply)
 
   /**
    * Create an [[akka.japi.pf.FSMStateFunctionBuilder]] with the first case statement set.
@@ -825,7 +853,7 @@ abstract class AbstractPersistentFSMBase[S, D, E] extends PersistentFSMBase[S, D
    * @return the builder with the case statement added
    */
   final def matchEvent(eventMatches: JList[AnyRef], apply: Apply2[AnyRef, D, State]): FSMStateFunctionBuilder[S, D, E] =
-    new FSMStateFunctionBuilder[S, D, E]().event(eventMatches, apply);
+    new FSMStateFunctionBuilder[S, D, E]().event(eventMatches, apply)
 
   /**
    * Create an [[akka.japi.pf.FSMStateFunctionBuilder]] with the first case statement set.
@@ -838,7 +866,7 @@ abstract class AbstractPersistentFSMBase[S, D, E] extends PersistentFSMBase[S, D
    * @return the builder with the case statement added
    */
   final def matchEventEquals[Ev, DT <: D](event: Ev, dataType: Class[DT], apply: Apply2[Ev, DT, State]): FSMStateFunctionBuilder[S, D, E] =
-    new FSMStateFunctionBuilder[S, D, E]().eventEquals(event, dataType, apply);
+    new FSMStateFunctionBuilder[S, D, E]().eventEquals(event, dataType, apply)
 
   /**
    * Create an [[akka.japi.pf.FSMStateFunctionBuilder]] with the first case statement set.
@@ -850,7 +878,7 @@ abstract class AbstractPersistentFSMBase[S, D, E] extends PersistentFSMBase[S, D
    * @return the builder with the case statement added
    */
   final def matchEventEquals[Ev](event: Ev, apply: Apply2[Ev, D, State]): FSMStateFunctionBuilder[S, D, E] =
-    new FSMStateFunctionBuilder[S, D, E]().eventEquals(event, apply);
+    new FSMStateFunctionBuilder[S, D, E]().eventEquals(event, apply)
 
   /**
    * Create an [[akka.japi.pf.FSMStateFunctionBuilder]] with the first case statement set.

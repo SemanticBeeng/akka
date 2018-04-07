@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
 package akka.cluster
 
@@ -120,6 +120,7 @@ abstract class MBeanSpec
              |    {
              |      "address": "${sortedNodes(0)}",
              |      "roles": [
+             |        "dc-default",
              |        "testNode"
              |      ],
              |      "status": "Up"
@@ -127,6 +128,7 @@ abstract class MBeanSpec
              |    {
              |      "address": "${sortedNodes(1)}",
              |      "roles": [
+             |        "dc-default",
              |        "testNode"
              |      ],
              |      "status": "Up"
@@ -134,6 +136,7 @@ abstract class MBeanSpec
              |    {
              |      "address": "${sortedNodes(2)}",
              |      "roles": [
+             |        "dc-default",
              |        "testNode"
              |      ],
              |      "status": "Up"
@@ -141,6 +144,7 @@ abstract class MBeanSpec
              |    {
              |      "address": "${sortedNodes(3)}",
              |      "roles": [
+             |        "dc-default",
              |        "testNode"
              |      ],
              |      "status": "Up"

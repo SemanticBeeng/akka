@@ -1,6 +1,7 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.cluster.ddata
 
 import scala.annotation.tailrec
@@ -36,18 +37,19 @@ object ORSet {
   /**
    * INTERNAL API
    */
-  @InternalApi private[akka]type Dot = VersionVector
+  @InternalApi private[akka] type Dot = VersionVector
 
-  sealed trait DeltaOp extends ReplicatedDelta with RequiresCausalDeliveryOfDeltas {
+  sealed trait DeltaOp extends ReplicatedDelta with RequiresCausalDeliveryOfDeltas with ReplicatedDataSerialization {
     type T = DeltaOp
   }
 
   /**
    * INTERNAL API
    */
-  @InternalApi private[akka] sealed abstract class AtomicDeltaOp[A] extends DeltaOp {
+  @InternalApi private[akka] sealed abstract class AtomicDeltaOp[A] extends DeltaOp with ReplicatedDeltaSize {
     def underlying: ORSet[A]
     override def zero: ORSet[A] = ORSet.empty
+    override def deltaSize: Int = 1
   }
 
   /** INTERNAL API */
@@ -91,7 +93,11 @@ object ORSet {
     }
   }
 
-  final case class DeltaGroup[A](ops: immutable.IndexedSeq[DeltaOp]) extends DeltaOp {
+  /**
+   * INTERNAL API
+   */
+  @InternalApi private[akka] final case class DeltaGroup[A](ops: immutable.IndexedSeq[DeltaOp])
+    extends DeltaOp with ReplicatedDeltaSize {
     override def merge(that: DeltaOp): DeltaOp = that match {
       case thatAdd: AddDeltaOp[A] ⇒
         // merge AddDeltaOp into last AddDeltaOp in the group, if possible
@@ -104,6 +110,8 @@ object ORSet {
     }
 
     override def zero: ORSet[A] = ORSet.empty
+
+    override def deltaSize: Int = ops.size
   }
 
   /**
@@ -277,8 +285,6 @@ final class ORSet[A] private[akka] (
   extends DeltaReplicatedData
   with ReplicatedDataSerialization with RemovedNodePruning with FastMerge {
 
-  import ORSet.{ AddDeltaOp, RemoveDeltaOp }
-
   type T = ORSet[A]
   type D = ORSet.DeltaOp
 
@@ -434,9 +440,17 @@ final class ORSet[A] private[akka] (
     val (elem, thatDot) = that.elementsMap.head
     def deleteDots = that.vvector.versionsIterator
     def deleteDotsNodes = deleteDots.map { case (dotNode, _) ⇒ dotNode }
-    val newElementsMap =
-      if (deleteDots.forall { case (dotNode, dotV) ⇒ this.vvector.versionAt(dotNode) <= dotV }) {
-        elementsMap.get(elem) match {
+    val newElementsMap = {
+      val thisDotOption = this.elementsMap.get(elem)
+      val deleteDotsAreGreater = deleteDots.forall {
+        case (dotNode, dotV) ⇒
+          thisDotOption match {
+            case Some(thisDot) ⇒ thisDot.versionAt(dotNode) <= dotV
+            case None          ⇒ false
+          }
+      }
+      if (deleteDotsAreGreater) {
+        thisDotOption match {
           case Some(thisDot) ⇒
             if (thisDot.versionsIterator.forall { case (thisDotNode, _) ⇒ deleteDotsNodes.contains(thisDotNode) })
               elementsMap - elem
@@ -444,11 +458,12 @@ final class ORSet[A] private[akka] (
           case None ⇒
             elementsMap
         }
-      } else {
+      } else
         elementsMap
-      }
+    }
     clearAncestor()
-    val newVvector = vvector.merge(that.vvector)
+
+    val newVvector = vvector.merge(thatDot)
     new ORSet(newElementsMap, newVvector)
   }
 

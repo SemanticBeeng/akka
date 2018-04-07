@@ -1,6 +1,7 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.remote.transport.netty
 
 import akka.actor.Address
@@ -41,8 +42,10 @@ private[remote] trait TcpHandlers extends CommonHandlers {
   override def createHandle(channel: Channel, localAddress: Address, remoteAddress: Address): AssociationHandle =
     new TcpAssociationHandle(localAddress, remoteAddress, transport, channel)
 
-  override def onDisconnect(ctx: ChannelHandlerContext, e: ChannelStateEvent): Unit =
+  override def onDisconnect(ctx: ChannelHandlerContext, e: ChannelStateEvent): Unit = {
     notifyListener(e.getChannel, Disassociated(AssociationHandle.Unknown))
+    log.debug("Remote connection to [{}] was disconnected because of {}", e.getChannel.getRemoteAddress, e)
+  }
 
   override def onMessage(ctx: ChannelHandlerContext, e: MessageEvent): Unit = {
     val bytes: Array[Byte] = e.getMessage.asInstanceOf[ChannelBuffer].array()
@@ -51,7 +54,7 @@ private[remote] trait TcpHandlers extends CommonHandlers {
 
   override def onException(ctx: ChannelHandlerContext, e: ExceptionEvent): Unit = {
     notifyListener(e.getChannel, Disassociated(AssociationHandle.Unknown))
-    log.warning("Remote connection to {} failed with {}", e.getChannel.getRemoteAddress, e.getCause)
+    log.warning("Remote connection to [{}] failed with {}", e.getChannel.getRemoteAddress, e.getCause)
     e.getChannel.close() // No graceful close here
   }
 }

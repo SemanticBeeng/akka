@@ -1,11 +1,11 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.remote.serialization
 
 import java.nio.ByteBuffer
 
-import akka.actor.{ ActorIdentity, ExtendedActorSystem, Identify }
 import akka.serialization.SerializationExtension
 import akka.testkit.AkkaSpec
 import akka.util.ByteString
@@ -13,7 +13,6 @@ import com.typesafe.config.ConfigFactory
 
 import scala.util.Random
 import java.nio.ByteOrder
-import akka.serialization.Serialization
 import akka.serialization.ByteBufferSerializer
 import akka.serialization.Serializer
 
@@ -47,7 +46,7 @@ class PrimitivesSerializationSpec extends AkkaSpec(PrimitivesSerializationSpec.t
     buffer.flip()
 
     // also make sure that the Array and ByteBuffer formats are equal, given LITTLE_ENDIAN
-    val array1 = Array.ofDim[Byte](buffer.remaining())
+    val array1 = new Array[Byte](buffer.remaining())
     buffer.get(array1)
     val array2 = serializer.toBinary(msg)
     ByteString(array1) should ===(ByteString(array2))

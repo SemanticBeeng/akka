@@ -1,6 +1,7 @@
 /**
- *  Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ *  Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.remote
 
 import java.util.concurrent.TimeoutException
@@ -204,7 +205,7 @@ class ActorsLeakSpec extends AkkaSpec(ActorsLeakSpec.config) with ImplicitSender
 
       EventFilter[TimeoutException](occurrences = 1).intercept {}
 
-      awaitAssert(assertResult(initialActors)(targets.flatMap(collectLiveActors).toSet), 5.seconds)
+      awaitAssert(assertResult(initialActors)(targets.flatMap(collectLiveActors).toSet), 10.seconds)
     }
 
   }

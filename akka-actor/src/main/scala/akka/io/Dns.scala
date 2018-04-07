@@ -1,3 +1,7 @@
+/*
+ * Copyright (C) 2018 Lightbend Inc. <https://www.lightbend.com>
+ */
+
 package akka.io
 
 import java.net.{ Inet4Address, Inet6Address, InetAddress, UnknownHostException }
@@ -30,8 +34,8 @@ object Dns extends ExtensionId[DnsExt] with ExtensionIdProvider {
 
     @throws[UnknownHostException]
     def addr: InetAddress = addrOption match {
-      case Some(addr) ⇒ addr
-      case None       ⇒ throw new UnknownHostException(name)
+      case Some(ipAddress) ⇒ ipAddress
+      case None            ⇒ throw new UnknownHostException(name)
     }
   }
 

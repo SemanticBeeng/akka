@@ -1,6 +1,7 @@
 /**
- * Copyright (C) 2015-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2015-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.stream.impl.io
 
 import java.nio.ByteBuffer
@@ -10,6 +11,7 @@ import javax.net.ssl.SSLEngineResult.Status._
 import javax.net.ssl._
 
 import akka.actor._
+import akka.annotation.InternalApi
 import akka.stream._
 import akka.stream.impl.FanIn.InputBunch
 import akka.stream.impl.FanOut.OutputBunch
@@ -25,15 +27,15 @@ import scala.util.{ Failure, Success, Try }
 /**
  * INTERNAL API.
  */
-private[stream] object TLSActor {
+@InternalApi private[stream] object TLSActor {
 
   def props(
-    settings:        ActorMaterializerSettings,
-    createSSLEngine: ActorSystem ⇒ SSLEngine, // ActorSystem is only needed to support the AkkaSSLConfig legacy, see #21753
-    verifySession:   (ActorSystem, SSLSession) ⇒ Try[Unit], // ActorSystem is only needed to support the AkkaSSLConfig legacy, see #21753
-    closing:         TLSClosing,
-    tracing:         Boolean                               = false): Props =
-    Props(new TLSActor(settings, createSSLEngine, verifySession, closing, tracing)).withDeploy(Deploy.local)
+    maxInputBufferSize: Int,
+    createSSLEngine:    ActorSystem ⇒ SSLEngine, // ActorSystem is only needed to support the AkkaSSLConfig legacy, see #21753
+    verifySession:      (ActorSystem, SSLSession) ⇒ Try[Unit], // ActorSystem is only needed to support the AkkaSSLConfig legacy, see #21753
+    closing:            TLSClosing,
+    tracing:            Boolean                               = false): Props =
+    Props(new TLSActor(maxInputBufferSize, createSSLEngine, verifySession, closing, tracing)).withDeploy(Deploy.local)
 
   final val TransportIn = 0
   final val TransportOut = 0
@@ -45,12 +47,12 @@ private[stream] object TLSActor {
 /**
  * INTERNAL API.
  */
-private[stream] class TLSActor(
-  settings:        ActorMaterializerSettings,
-  createSSLEngine: ActorSystem ⇒ SSLEngine, // ActorSystem is only needed to support the AkkaSSLConfig legacy, see #21753
-  verifySession:   (ActorSystem, SSLSession) ⇒ Try[Unit], // ActorSystem is only needed to support the AkkaSSLConfig legacy, see #21753
-  closing:         TLSClosing,
-  tracing:         Boolean)
+@InternalApi private[stream] class TLSActor(
+  maxInputBufferSize: Int,
+  createSSLEngine:    ActorSystem ⇒ SSLEngine, // ActorSystem is only needed to support the AkkaSSLConfig legacy, see #21753
+  verifySession:      (ActorSystem, SSLSession) ⇒ Try[Unit], // ActorSystem is only needed to support the AkkaSSLConfig legacy, see #21753
+  closing:            TLSClosing,
+  tracing:            Boolean)
   extends Actor with ActorLogging with Pump {
 
   import TLSActor._
@@ -58,7 +60,7 @@ private[stream] class TLSActor(
   protected val outputBunch = new OutputBunch(outputCount = 2, self, this)
   outputBunch.markAllOutputs()
 
-  protected val inputBunch = new InputBunch(inputCount = 2, settings.maxInputBufferSize, this) {
+  protected val inputBunch = new InputBunch(inputCount = 2, maxInputBufferSize, this) {
     override def onError(input: Int, e: Throwable): Unit = fail(e)
   }
 
@@ -98,9 +100,9 @@ private[stream] class TLSActor(
             setNewSessionParameters(n)
             ByteString.empty
         }
-        if (tracing) log.debug(s"chopping from new chunk of ${buffer.size} into $name (${b.position})")
+        if (tracing) log.debug(s"chopping from new chunk of ${buffer.size} into $name (${b.position()})")
       } else {
-        if (tracing) log.debug(s"chopping from old chunk of ${buffer.size} into $name (${b.position})")
+        if (tracing) log.debug(s"chopping from old chunk of ${buffer.size} into $name (${b.position()})")
       }
       val copied = buffer.copyToBuffer(b)
       buffer = buffer.drop(copied)
@@ -347,7 +349,7 @@ private[stream] class TLSActor(
   private def doWrap(): Unit = {
     val result = engine.wrap(userInBuffer, transportOutBuffer)
     lastHandshakeStatus = result.getHandshakeStatus
-    if (tracing) log.debug(s"wrap: status=${result.getStatus} handshake=$lastHandshakeStatus remaining=${userInBuffer.remaining} out=${transportOutBuffer.position}")
+    if (tracing) log.debug(s"wrap: status=${result.getStatus} handshake=$lastHandshakeStatus remaining=${userInBuffer.remaining} out=${transportOutBuffer.position()}")
     if (lastHandshakeStatus == FINISHED) handshakeFinished()
     runDelegatedTasks()
     result.getStatus match {
@@ -367,7 +369,7 @@ private[stream] class TLSActor(
     val result = engine.unwrap(transportInBuffer, userOutBuffer)
     if (ignoreOutput) userOutBuffer.clear()
     lastHandshakeStatus = result.getHandshakeStatus
-    if (tracing) log.debug(s"unwrap: status=${result.getStatus} handshake=$lastHandshakeStatus remaining=${transportInBuffer.remaining} out=${userOutBuffer.position}")
+    if (tracing) log.debug(s"unwrap: status=${result.getStatus} handshake=$lastHandshakeStatus remaining=${transportInBuffer.remaining} out=${userOutBuffer.position()}")
     runDelegatedTasks()
     result.getStatus match {
       case OK ⇒
@@ -455,7 +457,7 @@ private[stream] class TLSActor(
 /**
  * INTERNAL API
  */
-private[stream] object TlsUtils {
+@InternalApi private[akka] object TlsUtils {
   def applySessionParameters(engine: SSLEngine, sessionParameters: NegotiateNewSession): Unit = {
     sessionParameters.enabledCipherSuites foreach (cs ⇒ engine.setEnabledCipherSuites(cs.toArray))
     sessionParameters.enabledProtocols foreach (p ⇒ engine.setEnabledProtocols(p.toArray))

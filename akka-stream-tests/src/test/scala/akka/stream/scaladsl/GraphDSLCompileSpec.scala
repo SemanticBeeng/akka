@@ -1,9 +1,9 @@
 /**
- * Copyright (C) 2014-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2014-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.stream.scaladsl
 
-import akka.NotUsed
 import akka.stream.impl.fusing.GraphStages
 import akka.stream._
 import akka.stream.testkit._
@@ -214,22 +214,36 @@ class GraphDSLCompileSpec extends StreamSpec {
       }).run()
     }
 
-    "distinguish between input and output ports" in {
-      intercept[IllegalArgumentException] {
-        RunnableGraph.fromGraph(GraphDSL.create() { implicit b ⇒
-          val zip = b.add(Zip[Int, String]())
-          val unzip = b.add(Unzip[Int, String]())
-          val wrongOut = Sink.asPublisher[(Int, Int)](false)
-          val whatever = Sink.asPublisher[Any](false)
-          "Flow(List(1, 2, 3)) ~> zip.left ~> wrongOut" shouldNot compile
-          """Flow(List("a", "b", "c")) ~> zip.left""" shouldNot compile
-          """Flow(List("a", "b", "c")) ~> zip.out""" shouldNot compile
-          "zip.left ~> zip.right" shouldNot compile
-          "Flow(List(1, 2, 3)) ~> zip.left ~> wrongOut" shouldNot compile
-          """Flow(List(1 -> "a", 2 -> "b", 3 -> "c")) ~> unzip.in ~> whatever""" shouldNot compile
+    "throw an error if some ports are not connected" in {
+      intercept[IllegalStateException] {
+        GraphDSL.create() { implicit b ⇒
+          val s = b.add(Source.empty[Int])
+          val op = b.add(Flow[Int].map(_ + 1))
+          val sink = b.add(Sink.foreach[Int](println))
+
+          op ~> sink.in
+
           ClosedShape
-        })
-      }.getMessage should include("must correspond to")
+        }
+      }.getMessage should be("Illegal GraphDSL usage. " +
+        "Inlets [Map.in] were not returned in the resulting shape and not connected. " +
+        "Outlets [EmptySource.out] were not returned in the resulting shape and not connected.")
+    }
+
+    "throw an error if a connected port is returned in the shape" in {
+      intercept[IllegalStateException] {
+        GraphDSL.create() { implicit b ⇒
+          val s = b.add(Source.empty[Int])
+          val op = b.add(Flow[Int].map(_ + 1))
+          val sink = b.add(Sink.foreach[Int](println))
+
+          s ~> op ~> sink.in
+
+          op
+        }
+      }.getMessage should be("Illegal GraphDSL usage. " +
+        "Inlets [Map.in] were returned in the resulting shape but were already connected. " +
+        "Outlets [Map.out] were returned in the resulting shape but were already connected.")
     }
 
     "build with variance" in {
@@ -350,14 +364,13 @@ class GraphDSLCompileSpec extends StreamSpec {
     "suitably override attribute handling methods" in {
       import akka.stream.Attributes._
       val ga = GraphDSL.create() { implicit b ⇒
-        import GraphDSL.Implicits._
-        val id = b.add(GraphStages.Identity)
+        val id = b.add(GraphStages.identity[Any])
 
         FlowShape(id.in, id.out)
       }.async.addAttributes(none).named("useless")
 
-      ga.module.attributes.getFirst[Name] shouldEqual Some(Name("useless"))
-      ga.module.attributes.getFirst[AsyncBoundary.type] shouldEqual (Some(AsyncBoundary))
+      ga.traversalBuilder.attributes.getFirst[Name] shouldEqual Some(Name("useless"))
+      ga.traversalBuilder.attributes.getFirst[AsyncBoundary.type] shouldEqual (Some(AsyncBoundary))
     }
   }
 }

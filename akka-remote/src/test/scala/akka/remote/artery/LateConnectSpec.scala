@@ -1,14 +1,13 @@
 /**
- * Copyright (C) 2016-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2016-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.remote.artery
 
 import scala.concurrent.duration._
 
-import akka.actor.ActorSystem
 import akka.actor.RootActorPath
 import akka.remote.RARP
-import akka.testkit.AkkaSpec
 import akka.testkit.ImplicitSender
 import akka.testkit.SocketUtil
 import akka.testkit.TestActors
@@ -26,7 +25,7 @@ object LateConnectSpec {
 
 class LateConnectSpec extends ArteryMultiNodeSpec(LateConnectSpec.config) with ImplicitSender {
 
-  val portB = SocketUtil.temporaryServerAddress("localhost", udp = true).getPort
+  val portB = SocketUtil.temporaryLocalPort(udp = true)
   lazy val systemB = newRemoteSystem(
     name = Some("systemB"),
     extraConfig = Some(s"akka.remote.artery.canonical.port = $portB"))

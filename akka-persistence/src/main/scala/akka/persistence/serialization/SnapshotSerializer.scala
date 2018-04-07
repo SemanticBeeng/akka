@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  * Copyright (C) 2012-2016 Eligotech BV.
  */
 
@@ -78,7 +78,7 @@ class SnapshotSerializer(val system: ExtendedActorSystem) extends BaseSerializer
     val manifest =
       if (remaining == 0) ""
       else {
-        val manifestBytes = Array.ofDim[Byte](remaining)
+        val manifestBytes = new Array[Byte](remaining)
         in.read(manifestBytes)
         new String(manifestBytes, UTF_8)
       }

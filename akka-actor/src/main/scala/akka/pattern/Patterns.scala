@@ -1,20 +1,37 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.pattern
 
-import akka.actor.{ ActorSelection, Scheduler }
-import java.util.concurrent.{ Callable, TimeUnit }
-import scala.concurrent.ExecutionContext
-import scala.concurrent.duration.FiniteDuration
-import java.util.concurrent.CompletionStage
-import scala.compat.java8.FutureConverters._
+import java.util.concurrent.{ Callable, CompletionStage, TimeUnit }
 
+import akka.actor.{ ActorSelection, Scheduler }
+
+import scala.compat.java8.FutureConverters._
+import scala.concurrent.ExecutionContext
+
+/**
+ * "Pre Java 8" Java API for Akka patterns such as `ask`, `pipe` and others.
+ *
+ * These methods are possible to call from Java however work with the Scala [[scala.concurrent.Future]],
+ * due to the lack of non-blocking reactive Future implementation before Java 8.
+ *
+ * For Java applications developed with Java 8 and later, you might want to use [[akka.pattern.PatternsCS]] instead,
+ * which provide alternatives for these patterns which work with [[java.util.concurrent.CompletionStage]].
+ */
 object Patterns {
+  import akka.actor.ActorRef
   import akka.japi
-  import akka.actor.{ ActorRef }
-  import akka.pattern.{ ask ⇒ scalaAsk, pipe ⇒ scalaPipe, gracefulStop ⇒ scalaGracefulStop, after ⇒ scalaAfter }
+  import akka.pattern.{
+    after ⇒ scalaAfter,
+    ask ⇒ scalaAsk,
+    gracefulStop ⇒ scalaGracefulStop,
+    pipe ⇒ scalaPipe,
+    retry ⇒ scalaRetry
+  }
   import akka.util.Timeout
+
   import scala.concurrent.Future
   import scala.concurrent.duration._
 
@@ -257,13 +274,31 @@ object Patterns {
    */
   def after[T](duration: FiniteDuration, scheduler: Scheduler, context: ExecutionContext, value: Future[T]): Future[T] =
     scalaAfter(duration, scheduler)(value)(context)
+
+  /**
+   * Returns an internally retrying [[scala.concurrent.Future]]
+   * The first attempt will be made immediately, and each subsequent attempt will be made after 'delay'.
+   * A scheduler (eg context.system.scheduler) must be provided to delay each retry
+   * If attempts are exhausted the returned future is simply the result of invoking attempt.
+   * Note that the attempt function will be invoked on the given execution context for subsequent tries and
+   * therefore must be thread safe (not touch unsafe mutable state).
+   */
+  def retry[T](attempt: Callable[Future[T]], attempts: Int, delay: FiniteDuration, scheduler: Scheduler,
+               context: ExecutionContext): Future[T] =
+    scalaRetry(() ⇒ attempt.call, attempts, delay)(context, scheduler)
 }
 
+/**
+ * Java 8+ API for Akka patterns such as `ask`, `pipe` and others which work with [[java.util.concurrent.CompletionStage]].
+ *
+ * For working with Scala [[scala.concurrent.Future]] from Java you may want to use [[akka.pattern.Patterns]] instead.
+ */
 object PatternsCS {
+  import akka.actor.ActorRef
   import akka.japi
-  import akka.actor.{ ActorRef }
-  import akka.pattern.{ ask ⇒ scalaAsk, gracefulStop ⇒ scalaGracefulStop }
+  import akka.pattern.{ ask ⇒ scalaAsk, gracefulStop ⇒ scalaGracefulStop, retry ⇒ scalaRetry }
   import akka.util.Timeout
+
   import scala.concurrent.duration._
 
   /**
@@ -509,4 +544,15 @@ object PatternsCS {
    */
   def after[T](duration: FiniteDuration, scheduler: Scheduler, context: ExecutionContext, value: CompletionStage[T]): CompletionStage[T] =
     afterCompletionStage(duration, scheduler)(value)(context)
+
+  /**
+   * Returns an internally retrying [[java.util.concurrent.CompletionStage]]
+   * The first attempt will be made immediately, and each subsequent attempt will be made after 'delay'.
+   * A scheduler (eg context.system.scheduler) must be provided to delay each retry
+   * If attempts are exhausted the returned completion stage is simply the result of invoking attempt.
+   * Note that the attempt function will be invoked on the given execution context for subsequent tries
+   * and therefore must be thread safe (not touch unsafe mutable state).
+   */
+  def retry[T](attempt: Callable[CompletionStage[T]], attempts: Int, delay: FiniteDuration, scheduler: Scheduler, ec: ExecutionContext): CompletionStage[T] =
+    scalaRetry(() ⇒ attempt.call().toScala, attempts, delay)(ec, scheduler).toJava
 }

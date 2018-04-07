@@ -1,6 +1,7 @@
 /**
- * Copyright (C) 2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2017-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.cluster.ddata
 
 import scala.collection.immutable.TreeMap
@@ -9,6 +10,7 @@ import akka.actor.Address
 import akka.annotation.InternalApi
 import akka.cluster.ddata.Key.KeyId
 import akka.cluster.ddata.Replicator.Internal.DeltaPropagation
+import akka.cluster.ddata.Replicator.Internal.DeltaPropagation.NoDeltaPlaceholder
 
 /**
  * INTERNAL API: Used by the Replicator actor.
@@ -28,6 +30,8 @@ import akka.cluster.ddata.Replicator.Internal.DeltaPropagation
   def allNodes: Vector[Address]
 
   def createDeltaPropagation(deltas: Map[KeyId, (ReplicatedData, Long, Long)]): DeltaPropagation
+
+  def maxDeltaSize: Int
 
   def currentVersion(key: KeyId): Long = deltaCounter.get(key) match {
     case Some(v) ⇒ v
@@ -104,7 +108,19 @@ import akka.cluster.ddata.Replicator.Internal.DeltaPropagation
               val deltaGroup = cache.get(cacheKey) match {
                 case None ⇒
                   val group = deltaEntriesAfterJ.valuesIterator.reduceLeft {
-                    (d1, d2) ⇒ d1.merge(d2.asInstanceOf[d1.T])
+                    (d1, d2) ⇒
+                      val merged = d2 match {
+                        case NoDeltaPlaceholder ⇒ NoDeltaPlaceholder
+                        case _ ⇒
+                          // this is fine also if d1 is a NoDeltaPlaceholder
+                          d1.merge(d2.asInstanceOf[d1.T])
+                      }
+                      merged match {
+                        case s: ReplicatedDeltaSize if s.deltaSize >= maxDeltaSize ⇒
+                          // discard too large deltas
+                          NoDeltaPlaceholder
+                        case _ ⇒ merged
+                      }
                   }
                   cache = cache.updated(cacheKey, group)
                   group

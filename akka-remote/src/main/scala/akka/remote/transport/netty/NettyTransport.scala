@@ -1,6 +1,7 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.remote.transport.netty
 
 import akka.actor.{ Address, ExtendedActorSystem }
@@ -179,8 +180,8 @@ private[netty] trait CommonHandlers extends NettyHelpers {
     NettyTransport.addressFromSocketAddress(channel.getLocalAddress, schemeIdentifier, system.name, Some(settings.Hostname), None) match {
       case Some(localAddress) ⇒
         val handle = createHandle(channel, localAddress, remoteAddress)
-        handle.readHandlerPromise.future.onSuccess {
-          case listener: HandleEventListener ⇒
+        handle.readHandlerPromise.future.foreach {
+          listener ⇒
             registerListener(channel, listener, msg, remoteSocketAddress.asInstanceOf[InetSocketAddress])
             channel.setReadable(true)
         }
@@ -203,11 +204,11 @@ private[netty] abstract class ServerHandler(
 
   final protected def initInbound(channel: Channel, remoteSocketAddress: SocketAddress, msg: ChannelBuffer): Unit = {
     channel.setReadable(false)
-    associationListenerFuture.onSuccess {
-      case listener: AssociationEventListener ⇒
+    associationListenerFuture.foreach {
+      listener ⇒
         val remoteAddress = NettyTransport.addressFromSocketAddress(remoteSocketAddress, transport.schemeIdentifier,
           transport.system.name, hostName = None, port = None).getOrElse(
-          throw new NettyTransportException(s"Unknown inbound remote address type [${remoteSocketAddress.getClass.getName}]"))
+            throw new NettyTransportException(s"Unknown inbound remote address type [${remoteSocketAddress.getClass.getName}]"))
         init(channel, remoteSocketAddress, remoteAddress, msg) { listener notify InboundAssociation(_) }
     }
   }
@@ -432,7 +433,7 @@ class NettyTransport(val settings: NettyTransportSettings, val system: ExtendedA
                 case None          ⇒ throw new NettyTransportException(s"Unknown local address type [${newServerChannel.getLocalAddress.getClass.getName}]")
               }
               localAddress = address
-              associationListenerPromise.future.onSuccess { case listener ⇒ newServerChannel.setReadable(true) }
+              associationListenerPromise.future.foreach { _ ⇒ newServerChannel.setReadable(true) }
               (address, associationListenerPromise)
             case None ⇒ throw new NettyTransportException(s"Unknown local address type [${newServerChannel.getLocalAddress.getClass.getName}]")
           }
@@ -468,10 +469,10 @@ class NettyTransport(val settings: NettyTransportSettings, val system: ExtendedA
         handle ← if (isDatagram)
           Future {
             readyChannel.getRemoteAddress match {
-              case addr: InetSocketAddress ⇒
+              case address: InetSocketAddress ⇒
                 val handle = new UdpAssociationHandle(localAddress, remoteAddress, readyChannel, NettyTransport.this)
-                handle.readHandlerPromise.future.onSuccess {
-                  case listener ⇒ udpConnectionTable.put(addr, listener)
+                handle.readHandlerPromise.future.foreach {
+                  listener ⇒ udpConnectionTable.put(address, listener)
                 }
                 handle
               case unknown ⇒ throw new NettyTransportException(s"Unknown outbound remote address type [${unknown.getClass.getName}]")

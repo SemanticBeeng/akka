@@ -1,13 +1,14 @@
 /**
- * Copyright (C) 2016-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2016-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.stream.scaladsl
 
 import java.util.concurrent.atomic.AtomicBoolean
 
 import akka.Done
 import akka.stream.impl.LazySource
-import akka.stream.stage.{ GraphStage, GraphStageLogic, OutHandler }
+import akka.stream.stage.{ GraphStage, GraphStageLogic }
 import akka.stream.testkit.Utils.{ TE, assertAllStagesStopped }
 import akka.stream.testkit.{ StreamSpec, TestPublisher, TestSubscriber }
 import akka.stream.{ ActorMaterializer, Attributes, Outlet, SourceShape }
@@ -91,30 +92,20 @@ class LazySourceSpec extends StreamSpec with DefaultTimeout with ScalaFutures {
       outProbe.expectError() shouldEqual TE("OMG Who set that on fire!?!")
     }
 
-    val attributesSource = Source.fromGraph(
-      new GraphStage[SourceShape[Attributes]] {
-        val out = Outlet[Attributes]("AttributesSource.out")
-        override val shape: SourceShape[Attributes] = SourceShape(out)
-        override def createLogic(inheritedAttributes: Attributes): GraphStageLogic = new GraphStageLogic(shape) with OutHandler {
-          override def onPull(): Unit = {
-            push(out, inheritedAttributes)
-            completeStage()
-          }
-          setHandler(out, this)
+    "fail correctly when materialization of inner source fails" in assertAllStagesStopped {
+      val matFail = TE("fail!")
+      object FailingInnerMat extends GraphStage[SourceShape[String]] {
+        val out = Outlet[String]("out")
+        val shape = SourceShape(out)
+        override def createLogic(inheritedAttributes: Attributes): GraphStageLogic = new GraphStageLogic(shape) {
+          throw matFail
         }
       }
-    )
 
-    "propagate attributes to inner streams" in assertAllStagesStopped {
-      val f = Source.single(attributesSource.addAttributes(Attributes.name("inner")))
-        .flatMapMerge(1, identity)
-        .addAttributes(Attributes.name("outer"))
-        .runWith(Sink.head)
+      val result = Source.lazily(() ⇒ Source.fromGraph(FailingInnerMat)).to(Sink.ignore).run()
 
-      val attributes = f.futureValue.attributeList
-      attributes should contain(Attributes.Name("inner"))
-      attributes should contain(Attributes.Name("outer"))
-      attributes.indexOf(Attributes.Name("outer")) < attributes.indexOf(Attributes.Name("inner")) should be(true)
+      result.failed.futureValue should ===(matFail)
+
     }
   }
 

@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
 
 package akka.actor
@@ -10,7 +10,7 @@ import akka.dispatch.sysmsg._
 import java.lang.{ IllegalStateException, UnsupportedOperationException }
 
 import akka.serialization.{ JavaSerializer, Serialization }
-import akka.event.{ EventStream, Logging, LoggingAdapter, MarkerLoggingAdapter }
+import akka.event.{ EventStream, Logging, MarkerLoggingAdapter }
 
 import scala.annotation.tailrec
 import java.util.concurrent.ConcurrentHashMap
@@ -159,7 +159,7 @@ abstract class ActorRef extends java.lang.Comparable[ActorRef] with Serializable
 
 /**
  * This trait represents the Scala Actor API
- * There are implicit conversions in ../actor/Implicits.scala
+ * There are implicit conversions in package.scala
  * from ActorRef -&gt; ScalaActorRef and back
  */
 trait ScalaActorRef { ref: ActorRef ⇒
@@ -472,7 +472,9 @@ sealed trait AllDeadLetters {
 
 /**
  * When a message is sent to an Actor that is terminated before receiving the message, it will be sent as a DeadLetter
- * to the ActorSystem's EventStream
+ * to the ActorSystem's EventStream.
+ *
+ * When this message was sent without a sender [[ActorRef]], `sender` will be `system.deadLetters`.
  */
 @SerialVersionUID(1L)
 final case class DeadLetter(message: Any, sender: ActorRef, recipient: ActorRef) extends AllDeadLetters {
@@ -718,7 +720,7 @@ private[akka] final class FunctionRef(
       case w: Watch   ⇒ addWatcher(w.watchee, w.watcher)
       case u: Unwatch ⇒ remWatcher(u.watchee, u.watcher)
       case DeathWatchNotification(actorRef, _, _) ⇒
-        this.!(Terminated(actorRef)(existenceConfirmed = true, addressTerminated = false))
+        this.!(Terminated(actorRef)(existenceConfirmed = true, addressTerminated = false))(actorRef)
       case _ ⇒ //ignore all other messages
     }
   }

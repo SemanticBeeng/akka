@@ -1,14 +1,16 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.stream.impl.io.compression
 
 import java.util.zip.Inflater
 
+import akka.annotation.InternalApi
 import akka.stream.Attributes
 
 /** INTERNAL API */
-private[akka] class DeflateDecompressor(maxBytesPerChunk: Int)
+@InternalApi private[akka] class DeflateDecompressor(maxBytesPerChunk: Int)
   extends DeflateDecompressorBase(maxBytesPerChunk) {
 
   override def createLogic(attr: Attributes) = new DecompressorParsingLogic {

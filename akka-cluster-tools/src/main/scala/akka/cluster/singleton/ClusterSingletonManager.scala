@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
 
 package akka.cluster.singleton
@@ -7,6 +7,8 @@ package akka.cluster.singleton
 import com.typesafe.config.Config
 import scala.concurrent.duration._
 import scala.collection.immutable
+import scala.concurrent.Future
+
 import akka.actor.Actor
 import akka.actor.Deploy
 import akka.actor.ActorSystem
@@ -26,10 +28,13 @@ import akka.actor.NoSerializationVerificationNeeded
 import akka.cluster.UniqueAddress
 import akka.cluster.ClusterEvent
 import scala.concurrent.Promise
+
 import akka.Done
 import akka.actor.CoordinatedShutdown
+import akka.annotation.DoNotInherit
 import akka.pattern.ask
 import akka.util.Timeout
+import akka.cluster.ClusterSettings
 
 object ClusterSingletonManagerSettings {
 
@@ -250,16 +255,20 @@ object ClusterSingletonManager {
         // should preferably complete before stopping the singleton sharding coordinator on same node.
         val coordShutdown = CoordinatedShutdown(context.system)
         coordShutdown.addTask(CoordinatedShutdown.PhaseClusterExiting, "singleton-exiting-1") { () ⇒
-          implicit val timeout = Timeout(coordShutdown.timeout(CoordinatedShutdown.PhaseClusterExiting))
-          self.ask(SelfExiting).mapTo[Done]
+          if (cluster.isTerminated || cluster.selfMember.status == MemberStatus.Down) {
+            Future.successful(Done)
+          } else {
+            implicit val timeout = Timeout(coordShutdown.timeout(CoordinatedShutdown.PhaseClusterExiting))
+            self.ask(SelfExiting).mapTo[Done]
+          }
         }
       }
       override def postStop(): Unit = cluster.unsubscribe(self)
 
-      def matchingRole(member: Member): Boolean = role match {
-        case None    ⇒ true
-        case Some(r) ⇒ member.hasRole(r)
-      }
+      private val selfDc = ClusterSettings.DcRolePrefix + cluster.settings.SelfDataCenter
+
+      def matchingRole(member: Member): Boolean =
+        member.hasRole(selfDc) && role.forall(member.hasRole)
 
       def trackChange(block: () ⇒ Unit): Unit = {
         val before = membersByAge.headOption
@@ -294,9 +303,12 @@ object ClusterSingletonManager {
       }
 
       def sendFirstChange(): Unit = {
-        val event = changes.head
-        changes = changes.tail
-        context.parent ! event
+        // don't send cluster change events if this node is shutting its self down, just wait for SelfExiting
+        if (!cluster.isTerminated) {
+          val event = changes.head
+          changes = changes.tail
+          context.parent ! event
+        }
       }
 
       def receive = {
@@ -322,7 +334,7 @@ object ClusterSingletonManager {
           context.unbecome()
         case MemberUp(m) ⇒
           add(m)
-          deliverChanges
+          deliverChanges()
         case MemberRemoved(m, _) ⇒
           remove(m)
           deliverChanges()
@@ -348,9 +360,7 @@ object ClusterSingletonManager {
           case _              ⇒ super.unhandled(msg)
         }
       }
-
     }
-
   }
 }
 
@@ -394,6 +404,8 @@ class ClusterSingletonManagerIsStuck(message: String) extends AkkaException(mess
  * Use factory method [[ClusterSingletonManager#props]] to create the
  * [[akka.actor.Props]] for the actor.
  *
+ * Not intended for subclassing by user code.
+ *
  *
  * @param singletonProps [[akka.actor.Props]] of the singleton actor instance.
  *
@@ -407,6 +419,7 @@ class ClusterSingletonManagerIsStuck(message: String) extends AkkaException(mess
  *
  * @param settings see [[ClusterSingletonManagerSettings]]
  */
+@DoNotInherit
 class ClusterSingletonManager(
   singletonProps:     Props,
   terminationMessage: Any,
@@ -461,11 +474,19 @@ class ClusterSingletonManager(
   // for CoordinatedShutdown
   val coordShutdown = CoordinatedShutdown(context.system)
   val memberExitingProgress = Promise[Done]()
-  coordShutdown.addTask(CoordinatedShutdown.PhaseClusterExiting, "wait-singleton-exiting")(() ⇒
-    memberExitingProgress.future)
+  coordShutdown.addTask(CoordinatedShutdown.PhaseClusterExiting, "wait-singleton-exiting") { () ⇒
+    if (cluster.isTerminated || cluster.selfMember.status == MemberStatus.Down)
+      Future.successful(Done)
+    else
+      memberExitingProgress.future
+  }
   coordShutdown.addTask(CoordinatedShutdown.PhaseClusterExiting, "singleton-exiting-2") { () ⇒
-    implicit val timeout = Timeout(coordShutdown.timeout(CoordinatedShutdown.PhaseClusterExiting))
-    self.ask(SelfExiting).mapTo[Done]
+    if (cluster.isTerminated || cluster.selfMember.status == MemberStatus.Down) {
+      Future.successful(Done)
+    } else {
+      implicit val timeout = Timeout(coordShutdown.timeout(CoordinatedShutdown.PhaseClusterExiting))
+      self.ask(SelfExiting).mapTo[Done]
+    }
   }
 
   def logInfo(message: String): Unit =
@@ -679,6 +700,11 @@ class ClusterSingletonManager(
     case Event(HandOverToMe, OldestData(singleton, singletonTerminated)) ⇒
       gotoHandingOver(singleton, singletonTerminated, Some(sender()))
 
+    case Event(TakeOverFromMe, _) ⇒
+      // already oldest, so confirm and continue like that
+      sender() ! HandOverToMe
+      stay
+
     case Event(Terminated(ref), d @ OldestData(singleton, _)) if ref == singleton ⇒
       stay using d.copy(singletonTerminated = true)
 
@@ -738,7 +764,7 @@ class ClusterSingletonManager(
     case (Event(Terminated(ref), HandingOverData(singleton, handOverTo))) if ref == singleton ⇒
       handOverDone(handOverTo)
 
-    case Event(HandOverToMe, d @ HandingOverData(singleton, handOverTo)) if handOverTo == Some(sender()) ⇒
+    case Event(HandOverToMe, HandingOverData(singleton, handOverTo)) if handOverTo == Some(sender()) ⇒
       // retry
       sender() ! HandOverInProgress
       stay

@@ -1,24 +1,19 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
 package akka.cluster
 
-import scala.collection.immutable
-import scala.language.postfixOps
-import scala.concurrent.duration._
-import akka.actor.Address
-import akka.cluster.MemberStatus._
-import akka.remote.testkit.MultiNodeConfig
-import akka.remote.testkit.MultiNodeSpec
-import akka.testkit._
-import com.typesafe.config.ConfigFactory
-import org.scalatest.BeforeAndAfter
-import akka.actor.ActorSystem
-import akka.actor.ActorRef
+import akka.actor._
 import akka.event.Logging.Info
-import akka.actor.Actor
-import akka.actor.Props
 import akka.remote.RARP
+import akka.remote.testkit.{ MultiNodeConfig, MultiNodeSpec }
+import akka.testkit._
+import akka.testkit.TestKit
+import com.typesafe.config.ConfigFactory
+
+import scala.collection.immutable
+import scala.concurrent.duration._
+import scala.language.postfixOps
 
 object NodeChurnMultiJvmSpec extends MultiNodeConfig {
   val first = role("first")
@@ -28,6 +23,7 @@ object NodeChurnMultiJvmSpec extends MultiNodeConfig {
   commonConfig(debugConfig(on = false).
     withFallback(ConfigFactory.parseString("""
       akka.cluster.auto-down-unreachable-after = 1s
+      akka.cluster.prune-gossip-tombstones-after = 1s
       akka.remote.log-frame-size-exceeding = 1200b
       akka.remote.artery.advanced {
         idle-cpu-level = 1

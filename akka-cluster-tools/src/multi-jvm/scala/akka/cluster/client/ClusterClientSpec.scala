@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
 package akka.cluster.client
 
@@ -285,17 +285,14 @@ class ClusterClientSpec extends MultiNodeSpec(ClusterClientSpec) with STMultiNod
     "report events" in within(15 seconds) {
       runOn(client) {
         implicit val timeout = Timeout(1.second.dilated)
-        val c = Await.result(system.actorSelection("/user/client").resolveOne(), timeout.duration)
-        val l = system.actorOf(Props(classOf[TestClientListener], c), "reporter-client-listener")
+        val client = Await.result(system.actorSelection("/user/client").resolveOne(), timeout.duration)
+        val listener = system.actorOf(Props(classOf[TestClientListener], client), "reporter-client-listener")
 
         val expectedContacts = Set(first, second, third, fourth).map(node(_) / "system" / "receptionist")
-        within(10.seconds) {
-          awaitAssert {
-            val probe = TestProbe()
-            l.tell(TestClientListener.GetLatestContactPoints, probe.ref)
-            probe.expectMsgType[LatestContactPoints].contactPoints should ===(expectedContacts)
-          }
-        }
+        awaitAssert({
+          listener ! TestClientListener.GetLatestContactPoints
+          expectMsgType[LatestContactPoints].contactPoints should ===(expectedContacts)
+        }, max = 10.seconds)
       }
 
       enterBarrier("reporter-client-listener-tested")
@@ -311,19 +308,48 @@ class ClusterClientSpec extends MultiNodeSpec(ClusterClientSpec) with STMultiNod
           log.info("Testing that the receptionist has just one client")
           val l = system.actorOf(Props(classOf[TestReceptionistListener], r), "reporter-receptionist-listener")
 
-          val c = Await.result(system.actorSelection(node(client) / "user" / "client").resolveOne(), timeout.duration)
-          val expectedClients = Set(c)
-          within(10.seconds) {
-            awaitAssert {
-              val probe = TestProbe()
-              l.tell(TestReceptionistListener.GetLatestClusterClients, probe.ref)
-              probe.expectMsgType[LatestClusterClients].clusterClients should ===(expectedClients)
-            }
-          }
+          val expectedClient = Await.result(system.actorSelection(node(client) / "user" / "client").resolveOne(), timeout.duration)
+          awaitAssert({
+            val probe = TestProbe()
+            l.tell(TestReceptionistListener.GetLatestClusterClients, probe.ref)
+            // "ask-client" might still be around, filter
+            probe.expectMsgType[LatestClusterClients].clusterClients should contain(expectedClient)
+          }, max = 10.seconds)
         }
       }
 
       enterBarrier("after-5")
+    }
+
+    "report a removal of a receptionist" in within(10 seconds) {
+      runOn(client) {
+        val unreachableContact = node(client) / "system" / "receptionist"
+        val expectedRoles = Set(first, second, third, fourth)
+        val expectedContacts = expectedRoles.map(node(_) / "system" / "receptionist")
+
+        // We need to slow down things otherwise our receptionists can sometimes tell us
+        // that our unreachableContact is unreachable before we get a chance to
+        // subscribe to events.
+        expectedRoles.foreach { role ⇒
+          testConductor.blackhole(client, role, Direction.Both).await
+        }
+
+        val c = system.actorOf(ClusterClient.props(
+          ClusterClientSettings(system).withInitialContacts(expectedContacts + unreachableContact)), "client5")
+
+        val probe = TestProbe()
+        c.tell(SubscribeContactPoints, probe.ref)
+
+        expectedRoles.foreach { role ⇒
+          testConductor.passThrough(client, role, Direction.Both).await
+        }
+
+        probe.fishForMessage(10.seconds, "removal") {
+          case ContactPointRemoved(`unreachableContact`) ⇒ true
+          case _                                         ⇒ false
+        }
+      }
+      enterBarrier("after-7")
     }
 
     "re-establish connection to another receptionist when server is shutdown" in within(30 seconds) {
@@ -335,10 +361,10 @@ class ClusterClientSpec extends MultiNodeSpec(ClusterClientSpec) with STMultiNod
       enterBarrier("service2-replicated")
 
       runOn(client) {
-        val c = system.actorOf(ClusterClient.props(
+        val client = system.actorOf(ClusterClient.props(
           ClusterClientSettings(system).withInitialContacts(initialContacts)), "client2")
 
-        c ! ClusterClient.Send("/user/service2", "bonjour", localAffinity = true)
+        client ! ClusterClient.Send("/user/service2", "bonjour", localAffinity = true)
         val reply = expectMsgType[Reply]
         reply.msg should be("bonjour-ack")
         val receptionistRoleName = roleName(reply.node) match {
@@ -347,13 +373,11 @@ class ClusterClientSpec extends MultiNodeSpec(ClusterClientSpec) with STMultiNod
         }
         testConductor.exit(receptionistRoleName, 0).await
         remainingServerRoleNames -= receptionistRoleName
-        within(remaining - 3.seconds) {
-          awaitAssert {
-            c ! ClusterClient.Send("/user/service2", "hi again", localAffinity = true)
-            expectMsgType[Reply](1 second).msg should be("hi again-ack")
-          }
-        }
-        system.stop(c)
+        awaitAssert({
+          client ! ClusterClient.Send("/user/service2", "hi again", localAffinity = true)
+          expectMsgType[Reply](1 second).msg should be("hi again-ack")
+        }, max = remaining - 3.seconds)
+        system.stop(client)
       }
       enterBarrier("verifed-3")
       receiveWhile(2 seconds) {
@@ -364,15 +388,12 @@ class ClusterClientSpec extends MultiNodeSpec(ClusterClientSpec) with STMultiNod
       runOn(client) {
         // Locate the test listener from a previous test and see that it agrees
         // with what the client is telling it about what receptionists are alive
-        val l = system.actorSelection("/user/reporter-client-listener")
+        val listener = system.actorSelection("/user/reporter-client-listener")
         val expectedContacts = remainingServerRoleNames.map(node(_) / "system" / "receptionist")
-        within(10.seconds) {
-          awaitAssert {
-            val probe = TestProbe()
-            l.tell(TestClientListener.GetLatestContactPoints, probe.ref)
-            probe.expectMsgType[LatestContactPoints].contactPoints should ===(expectedContacts)
-          }
-        }
+        awaitAssert({
+          listener ! TestClientListener.GetLatestContactPoints
+          expectMsgType[LatestContactPoints].contactPoints should ===(expectedContacts)
+        }, max = 10.seconds)
       }
       enterBarrier("after-6")
     }
@@ -415,7 +436,7 @@ class ClusterClientSpec extends MultiNodeSpec(ClusterClientSpec) with STMultiNod
         system.stop(c)
       }
 
-      enterBarrier("after-7")
+      enterBarrier("after-8")
     }
 
     "re-establish connection to receptionist after server restart" in within(30 seconds) {

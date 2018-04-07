@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
 
 package akka.cluster
@@ -12,6 +12,7 @@ import akka.actor.Address
 import akka.cluster.InternalClusterAction._
 import java.lang.management.ManagementFactory
 import javax.management.ObjectName
+
 import akka.testkit.TestProbe
 import akka.actor.ActorSystem
 import akka.actor.Props
@@ -19,6 +20,7 @@ import com.typesafe.config.ConfigFactory
 import akka.actor.CoordinatedShutdown
 import akka.cluster.ClusterEvent.MemberEvent
 import akka.cluster.ClusterEvent._
+
 import scala.concurrent.Await
 
 object ClusterSpec {
@@ -71,7 +73,7 @@ class ClusterSpec extends AkkaSpec(ClusterSpec.config) with ImplicitSender {
       awaitAssert(clusterView.status should ===(MemberStatus.Up))
     }
 
-    "publish inital state as snapshot to subscribers" in {
+    "publish initial state as snapshot to subscribers" in {
       try {
         cluster.subscribe(testActor, ClusterEvent.InitialStateAsSnapshot, classOf[ClusterEvent.MemberEvent])
         expectMsgClass(classOf[ClusterEvent.CurrentClusterState])
@@ -80,7 +82,7 @@ class ClusterSpec extends AkkaSpec(ClusterSpec.config) with ImplicitSender {
       }
     }
 
-    "publish inital state as events to subscribers" in {
+    "publish initial state as events to subscribers" in {
       try {
         cluster.subscribe(testActor, ClusterEvent.InitialStateAsEvents, classOf[ClusterEvent.MemberEvent])
         expectMsgClass(classOf[ClusterEvent.MemberUp])
@@ -156,10 +158,41 @@ class ClusterSpec extends AkkaSpec(ClusterSpec.config) with ImplicitSender {
         Cluster(sys2).join(Cluster(sys2).selfAddress)
         probe.expectMsgType[MemberUp]
 
-        CoordinatedShutdown(sys2).run()
+        CoordinatedShutdown(sys2).run(CoordinatedShutdown.UnknownReason)
         probe.expectMsgType[MemberLeft]
-        probe.expectMsgType[MemberExited]
-        probe.expectMsgType[MemberRemoved]
+        // MemberExited might not be published before MemberRemoved
+        val removed = probe.fishForMessage() {
+          case _: MemberExited  ⇒ false
+          case _: MemberRemoved ⇒ true
+        }.asInstanceOf[MemberRemoved]
+        removed.previousStatus should ===(MemberStatus.Exiting)
+      } finally {
+        shutdown(sys2)
+      }
+    }
+
+    "leave via CoordinatedShutdown.run when member status is Joining" in {
+      val sys2 = ActorSystem("ClusterSpec2", ConfigFactory.parseString("""
+        akka.actor.provider = "cluster"
+        akka.remote.netty.tcp.port = 0
+        akka.remote.artery.canonical.port = 0
+        akka.cluster.min-nr-of-members = 2
+        """))
+      try {
+        val probe = TestProbe()(sys2)
+        Cluster(sys2).subscribe(probe.ref, classOf[MemberEvent])
+        probe.expectMsgType[CurrentClusterState]
+        Cluster(sys2).join(Cluster(sys2).selfAddress)
+        probe.expectMsgType[MemberJoined]
+
+        CoordinatedShutdown(sys2).run(CoordinatedShutdown.UnknownReason)
+        probe.expectMsgType[MemberLeft]
+        // MemberExited might not be published before MemberRemoved
+        val removed = probe.fishForMessage() {
+          case _: MemberExited  ⇒ false
+          case _: MemberRemoved ⇒ true
+        }.asInstanceOf[MemberRemoved]
+        removed.previousStatus should ===(MemberStatus.Exiting)
       } finally {
         shutdown(sys2)
       }
@@ -181,10 +214,15 @@ class ClusterSpec extends AkkaSpec(ClusterSpec.config) with ImplicitSender {
 
         Cluster(sys2).leave(Cluster(sys2).selfAddress)
         probe.expectMsgType[MemberLeft]
-        probe.expectMsgType[MemberExited]
-        probe.expectMsgType[MemberRemoved]
+        // MemberExited might not be published before MemberRemoved
+        val removed = probe.fishForMessage() {
+          case _: MemberExited  ⇒ false
+          case _: MemberRemoved ⇒ true
+        }.asInstanceOf[MemberRemoved]
+        removed.previousStatus should ===(MemberStatus.Exiting)
         Await.result(sys2.whenTerminated, 10.seconds)
         Cluster(sys2).isTerminated should ===(true)
+        CoordinatedShutdown(sys2).shutdownReason() should ===(Some(CoordinatedShutdown.ClusterLeavingReason))
       } finally {
         shutdown(sys2)
       }
@@ -210,9 +248,42 @@ akka.loglevel=DEBUG
         probe.expectMsgType[MemberRemoved]
         Await.result(sys3.whenTerminated, 10.seconds)
         Cluster(sys3).isTerminated should ===(true)
+        CoordinatedShutdown(sys3).shutdownReason() should ===(Some(CoordinatedShutdown.ClusterDowningReason))
       } finally {
         shutdown(sys3)
       }
+    }
+
+    "register multiple cluster JMX MBeans with akka.cluster.jmx.multi-mbeans-in-same-jvm = on" in {
+      def getConfig = (port: Int) ⇒ ConfigFactory.parseString(
+        s"""
+             akka.cluster.jmx.multi-mbeans-in-same-jvm = on
+             akka.remote.netty.tcp.port = ${port}
+             akka.remote.artery.canonical.port = ${port}
+          """
+      ).withFallback(ConfigFactory.parseString(ClusterSpec.config))
+
+      val sys1 = ActorSystem("ClusterSpec4", getConfig(2552))
+      val sys2 = ActorSystem("ClusterSpec4", getConfig(2553))
+
+      try {
+        Cluster(sys1)
+        Cluster(sys2)
+
+        val name1 = new ObjectName(s"akka:type=Cluster,port=2552")
+        val info1 = ManagementFactory.getPlatformMBeanServer.getMBeanInfo(name1)
+        info1.getAttributes.length should be > (0)
+        info1.getOperations.length should be > (0)
+
+        val name2 = new ObjectName(s"akka:type=Cluster,port=2553")
+        val info2 = ManagementFactory.getPlatformMBeanServer.getMBeanInfo(name2)
+        info2.getAttributes.length should be > (0)
+        info2.getOperations.length should be > (0)
+      } finally {
+        shutdown(sys1)
+        shutdown(sys2)
+      }
+
     }
   }
 }

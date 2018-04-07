@@ -1,6 +1,7 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.actor
 import scala.annotation.{ switch, tailrec }
 import scala.collection.immutable
@@ -54,8 +55,8 @@ object ActorPath {
    * Parse string as actor path; throws java.net.MalformedURLException if unable to do so.
    */
   def fromString(s: String): ActorPath = s match {
-    case ActorPathExtractor(addr, elems) ⇒ RootActorPath(addr) / elems
-    case _                               ⇒ throw new MalformedURLException("cannot parse as ActorPath: " + s)
+    case ActorPathExtractor(address, elems) ⇒ RootActorPath(address) / elems
+    case _                                  ⇒ throw new MalformedURLException("cannot parse as ActorPath: " + s)
   }
 
   private final val ValidSymbols = """-_.*$+:@&=,!~';"""
@@ -367,10 +368,10 @@ final class ChildActorPath private[akka] (val parent: ActorPath, val name: Strin
     appendUidFragment(sb).toString
   }
 
-  private def addressStringLengthDiff(addr: Address): Int = {
+  private def addressStringLengthDiff(address: Address): Int = {
     val r = root
     if (r.address.host.isDefined) 0
-    else (addr.toString.length - r.address.toString.length)
+    else (address.toString.length - r.address.toString.length)
   }
 
   /**

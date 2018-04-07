@@ -1,17 +1,19 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.stream.impl.io.compression
 
 import java.util.zip.{ CRC32, Inflater, ZipException }
 
+import akka.annotation.InternalApi
 import akka.stream.Attributes
 import akka.stream.impl.io.ByteStringParser
 import akka.stream.impl.io.ByteStringParser.{ ParseResult, ParseStep }
 import akka.util.ByteString
 
 /** INTERNAL API */
-private[akka] class GzipDecompressor(maxBytesPerChunk: Int)
+@InternalApi private[akka] class GzipDecompressor(maxBytesPerChunk: Int)
   extends DeflateDecompressorBase(maxBytesPerChunk) {
 
   override def createLogic(attr: Attributes) = new DecompressorParsingLogic {
@@ -66,7 +68,7 @@ private[akka] class GzipDecompressor(maxBytesPerChunk: Int)
 }
 
 /** INTERNAL API */
-private[akka] object GzipDecompressor {
+@InternalApi private[akka] object GzipDecompressor {
   // RFC 1952: http://tools.ietf.org/html/rfc1952 section 2.2
   private[impl] val Header = ByteString(
     0x1F, // ID1

@@ -1,6 +1,7 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.cluster.ddata
 
 import akka.cluster.Cluster
@@ -97,19 +98,15 @@ final class PNCounter private[akka] (
       decrements = that.decrements.merge(this.decrements))
 
   override def delta: Option[PNCounter] = {
-    if (increments.delta.isEmpty && decrements.delta.isEmpty)
-      None
-    else {
-      val incrementsDelta = increments.delta match {
-        case Some(d) ⇒ d
-        case None    ⇒ GCounter.empty
-      }
-      val decrementsDelta = decrements.delta match {
-        case Some(d) ⇒ d
-        case None    ⇒ GCounter.empty
-      }
-      Some(new PNCounter(incrementsDelta, decrementsDelta))
+    val incrementsDelta = increments.delta match {
+      case Some(d) ⇒ d
+      case None    ⇒ GCounter.empty
     }
+    val decrementsDelta = decrements.delta match {
+      case Some(d) ⇒ d
+      case None    ⇒ GCounter.empty
+    }
+    Some(new PNCounter(incrementsDelta, decrementsDelta))
   }
 
   override def mergeDelta(thatDelta: PNCounter): PNCounter = merge(thatDelta)

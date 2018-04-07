@@ -1,8 +1,10 @@
 /**
- * Copyright (C) 2015-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2015-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.stream.impl.io
 
+import akka.annotation.InternalApi
 import akka.stream._
 import akka.stream.stage._
 import akka.util.ByteString
@@ -13,7 +15,7 @@ import scala.util.control.{ NoStackTrace, NonFatal }
 /**
  * INTERNAL API
  */
-private[akka] abstract class ByteStringParser[T] extends GraphStage[FlowShape[ByteString, T]] {
+@InternalApi private[akka] abstract class ByteStringParser[T] extends GraphStage[FlowShape[ByteString, T]] {
   import ByteStringParser._
 
   private val bytesIn = Inlet[ByteString]("bytesIn")
@@ -126,10 +128,14 @@ private[akka] abstract class ByteStringParser[T] extends GraphStage[FlowShape[By
     }
 
     override def onUpstreamFinish(): Unit = {
-      // If we have no pending pull from downstream, attempt to invoke the parser again. This will handle
+      // If we have no a pending pull from downstream, attempt to invoke the parser again. This will handle
       // truncation if necessary, or complete the stage (and maybe a final emit).
       if (isAvailable(objOut)) doParse()
-      // Otherwise the pending pull will kick of doParse()
+      // if we do not have a pending pull,
+      else if (buffer.isEmpty) {
+        if (acceptUpstreamFinish) completeStage()
+        else current.onTruncation()
+      }
     }
 
     setHandlers(bytesIn, objOut, this)
@@ -139,7 +145,7 @@ private[akka] abstract class ByteStringParser[T] extends GraphStage[FlowShape[By
 /**
  * INTERNAL API
  */
-private[akka] object ByteStringParser {
+@InternalApi private[akka] object ByteStringParser {
 
   val CompactionThreshold = 16
 

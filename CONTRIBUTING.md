@@ -1,6 +1,14 @@
-# Contributing to Akka
+# Welcome! Thank you for contributing to Akka!
+
+We follow the standard GitHub [fork & pull](https://help.github.com/articles/using-pull-requests/#fork--pull) approach to pull requests. Just fork the official repo, develop in a branch, and submit a PR!
+
+You're always welcome to submit your PR straight away and start the discussion (without reading the rest of this wonderful doc, or the README.md). The goal of these notes is to make your experience contributing to Akka as smooth and pleasant as possible. We're happy to guide you through the process once you've submitted your PR.
+
+# The Akka Community
 
 In case of questions about the contribution process or for discussion of specific issues please visit the [akka/dev gitter chat](https://gitter.im/akka/dev).
+
+You may also check out these [other resources](https://akka.io/get-involved/).
 
 # Navigating around the project & codebase
 
@@ -8,9 +16,8 @@ In case of questions about the contribution process or for discussion of specifi
 
 Depending on which version (or sometimes module) you want to work on, you should target a specific branch as explained below:
 
-* `master` – active development branch of Akka 2.4.x
-* `release-2.3` – maintenance branch of Akka 2.3.x
-* `artery-dev` – work on the upcoming remoting implementation, codenamed "artery"
+* `master` – active development branch of Akka 2.5.x
+* `release-2.4` – maintenance branch of Akka 2.4.x
 * similarly `release-2.#` branches contain legacy versions of Akka
 
 ## Tags
@@ -26,7 +33,8 @@ Most notably many tags start with a `t:` prefix (as in `topic:`), which categori
 In general *all issues are open for anyone working on them*, however if you're new to the project and looking for an issue
 that will be accepted and likely is a nice one to get started you should check out the following tags:
 
-- [community](https://github.com/akka/akka/labels/community) - which identifies issues that the core team will likely not have time to work on, or the issue is a nice entry level ticket. If you're not sure how to solve a ticket but would like to work on it feel free to ask in the issue about clarification or tips.
+- [good first issue](https://github.com/akka/akka/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22) - which identifies simple entry level tickets, such as improvements of documentation or tests. If you're not sure how to solve a ticket but would like to work on it feel free to ask in the issue about clarification or tips.
+- [help wanted](https://github.com/akka/akka/labels/help%20wanted) - which identifies issues that the core team will likely not have time to work on, or the issue is a nice entry level ticket. If you're not sure how to solve a ticket but would like to work on it feel free to ask in the issue about clarification or tips.
 - [nice-to-have (low-priority)](https://github.com/akka/akka/labels/nice-to-have%20%28low-prio%29) - are tasks which make sense, however are not very high priority (in face of other very high priority issues). If you see something interesting in this list, a contribution would be really wonderful!
 
 Another group of tickets are those which start from a number. They're used to signal in what phase of development an issue is:
@@ -58,18 +66,19 @@ We encourage changes that make it easier to achieve our goals in an efficient wa
 The steps below describe how to get a patch into a main development branch (e.g. `master`). 
 The steps are exactly the same for everyone involved in the project (be it core team, or first time contributor).
 
-1. Make sure an issue exists in the [issue tracker](https://github.com/akka/akka/issues) for the work you want to contribute. 
-   - If there is no ticket for it, [create one](https://github.com/akka/akka/issues/new) first.
+1. To avoid duplicated effort, it might be good to check the [issue tracker](https://github.com/akka/akka/issues) and [existing pull requests](https://github.com/akka/akka/pulls) for existing work.
+   - If there is no ticket yet, feel free to [create one](https://github.com/akka/akka/issues/new) to discuss the problem and the approach you want to take to solve it.
 1. [Fork the project](https://github.com/akka/akka#fork-destination-box) on GitHub. You'll need to create a feature-branch for your work on your fork, as this way you'll be able to submit a pull request against the mainline Akka.
 1. Create a branch on your fork and work on the feature. For example: `git checkout -b wip-custom-headers-akka-http`
    - Please make sure to follow the general quality guidelines (specified below) when developing your patch.
-   - Please write additional tests covering your feature and adjust existing ones if needed before submitting your pull request. The `validatePullRequest` sbt task ([explained below](#validatePullRequest)) may come in handy to verify your changes are correct.
+   - Please write additional tests covering your feature and adjust existing ones if needed before submitting your pull request. The `validatePullRequest` sbt task ([explained below](#the-validatepullrequest-task)) may come in handy to verify your changes are correct.
 1. Once your feature is complete, prepare the commit following our [Creating Commits And Writing Commit Messages](#creating-commits-and-writing-commit-messages). For example, a good commit message would be: `Adding compression support for Manifests #22222` (note the reference to the ticket it aimed to resolve).
-1. If it's a new feature, or a change of behaviour, document it on the [akka-docs](https://github.com/akka/akka/tree/master/akka-docs), remember, an undocumented feature is not a feature. If the feature was touching Scala or Java DSL, make sure to document it in both the Java and Scala documentation (usually in a file of the same name, but under `/scala/` instead of `/java/` etc).
+1. If it's a new feature, or a change of behavior, document it on the [akka-docs](https://github.com/akka/akka/tree/master/akka-docs), remember, an undocumented feature is not a feature. If the feature was touching Scala or Java DSL, make sure to document both the Scala and Java APIs.
 1. Now it's finally time to [submit the pull request](https://help.github.com/articles/using-pull-requests)!
+    - Please make sure to include a reference to the issue you're solving *in the comment* for the Pull Request, this will cause the PR to be linked properly with the Issue. Examples of good phrases for this are: "Resolves #1234" or "Refs #1234".
 1. If you have not already done so, you will be asked by our CLA bot to [sign the Lightbend CLA](http://www.lightbend.com/contribute/cla) online. CLA stands for Contributor License Agreement and is a way of protecting intellectual property disputes from harming the project.
 1. If you're not already on the contributors white-list, the @akka-ci bot will ask `Can one of the repo owners verify this patch?`, to which a core member will reply by commenting `OK TO TEST`. This is just a sanity check to prevent malicious code from being run on the Jenkins cluster.
-1. Now both committers and interested people will review your code. This process is to ensure the code we merge is of the best possible quality, and that no silly mistakes slip though. You're expected to follow-up these comments by adding new commits to the same branch. The commit messages of those commits can be more lose, for example: `Removed debugging using printline`, as they all will be squashed into one commit before merging into the main branch.
+1. Now both committers and interested people will review your code. This process is to ensure the code we merge is of the best possible quality, and that no silly mistakes slip through. You're expected to follow-up these comments by adding new commits to the same branch. The commit messages of those commits can be more loose, for example: `Removed debugging using printline`, as they all will be squashed into one commit before merging into the main branch.
     - The community and team are really nice people, so don't be afraid to ask follow up questions if you didn't understand some comment, or would like clarification on how to continue with a given feature. We're here to help, so feel free to ask and discuss any kind of questions you might have during review!
 1. After the review you should fix the issues as needed (pushing a new commit for new review etc.), iterating until the reviewers give their thumbs up–which is signalled usually by a comment saying `LGTM`, which means "Looks Good To Me". 
     - In general a PR is expected to get 2 LGTMs from the team before it is merged. If the PR is trivial, or under special circumstances (such as most of the team being on vacation, a PR was very thoroughly reviewed/tested and surely is correct) one LGTM may be fine as well.
@@ -87,7 +96,61 @@ The TL;DR; of the above very precise workflow version is:
 6. Keep polishing it until received enough LGTM
 7. Profit!
 
+## sbt
+
+Akka is using the [sbt](https://github.com/sbt/sbt) build system. So the first thing you have to do is to download and install sbt. You can read more about how to do that in the [sbt setup](http://www.scala-sbt.org/0.13/tutorial/index.html) documentation.
+
 Note that the Akka sbt project is large, so `sbt` needs to be run with lots of heap (1-2 GB). This can be specified using a command line argument `sbt -mem 2048` or in the environment variable `SBT_OPTS` but then as a regular JVM memory flag, for example `SBT_OPTS=-Xmx2G`, on some platforms you can also edit the global defaults for sbt in `/usr/local/etc/sbtopts`.
+
+To compile all the Akka core modules use the `compile` command:
+
+```
+sbt compile
+```
+
+You can run all tests with the `test` command:
+
+```
+sbt test
+```
+
+If you want to deploy the artifacts to your local Ivy repository (for example,
+to use from an sbt project) use the `publishLocal` command:
+
+```
+sbt publishLocal
+```
+
+Note that in the examples above we are calling `sbt compile` and `sbt test`
+and so on, but sbt also has an interactive mode. If you just run `sbt` you
+enter the interactive sbt prompt and can enter the commands directly. This saves
+starting up a new JVM instance for each command and can be much faster and more
+convenient.
+
+For example, building Akka as above is more commonly done like this:
+
+```
+% sbt
+[info] Set current project to default (in build file:/.../akka/project/plugins/)
+[info] Set current project to akka (in build file:/.../akka/)
+> compile
+...
+> test
+...
+```
+
+To run a single multi-jvm test:
+
+```
+sbt
+project akka-cluster
+multi-jvm:testOnly akka.cluster.SunnyWeather
+```
+
+### Do not use `-optimize` Scala compiler flag
+
+Akka has not been compiled or tested with `-optimize` Scala compiler flag. (In sbt, you can specify compiler options in the `scalacOptions` key.)
+Strange behavior has been reported by users that have tried it.
 
 ## The `validatePullRequest` task
 
@@ -95,8 +158,8 @@ The Akka build includes a special task called `validatePullRequest` which invest
 (uncommitted changes) in your local working directory and figures out which projects are impacted by those changes,
 then running tests only on those projects.
 
-For example changing something in `akka-http-core` would cause tests to be run in all projects which depend on it
-(e.g. `akka-http-tests`, `akka-http-marshallers-*`, `akka-docs` etc.).
+For example changing something in `akka-actor` would cause tests to be run in all projects which depend on it
+(e.g. `akka-actor-tests`, `akka-stream`, `akka-docs` etc.).
 
 To use the task simply type `validatePullRequest`, and the output should include entries like shown below:
 
@@ -104,7 +167,7 @@ To use the task simply type `validatePullRequest`, and the output should include
 > validatePullRequest
 [info] Diffing [HEAD] to determine changed modules in PR...
 [info] Detected uncomitted changes in directories (including in dependency analysis): [akka-protobuf,project]
-[info] Detected changes in directories: [akka-docs, project, akka-http-tests, akka-protobuf, akka-http-testkit, akka-http, akka-http-core, akka-stream]
+[info] Detected changes in directories: [akka-actor-tests, project, akka-stream, akka-docs, akka-persistence]
 ```
 
 By default changes are diffed with the `master` branch when working locally, if you want to validate against a different
@@ -128,7 +191,7 @@ an error like this:
 [error]    filter with: ProblemFilters.exclude[ReversedMissingMethodProblem]("akka.stream.scaladsl.FlowOps.foldAsync")
 ```
 
-In such situations it's good to consult with a core team member if the violation can be safely ignored (by adding the above snippet to `project/MiMa.scala`), or if it would indeed break binary compatibility.
+In such situations it's good to consult with a core team member if the violation can be safely ignored (by adding the above snippet to `<module>/src/main/mima-filters/<last-version>.backwards.excludes`), or if it would indeed break binary compatibility.
 
 Situations when it may be fine to ignore a MiMa issued warning include:
 
@@ -144,6 +207,7 @@ For a pull request to be considered at all it has to meet these requirements:
 1. Regardless if the code introduces new features or fixes bugs or regressions, it must have comprehensive tests.
 1. The code must be well documented in the Lightbend's standard documentation format (see the ‘Documentation’ section below).
 1. The commit messages must properly describe the changes, see further below.
+1. A pull request must indicate (link to) the issue it is aimed to resolve in the description (or comments) of the PR, in order to establish a link between PR and Issue. This can be achieved by writing "Fixes #1234" or similar in PR description.
 1. All Lightbend projects must include Lightbend copyright notices.  Each project can choose between one of two approaches:
 
     1. All source files in the project must have a Lightbend copyright notice in the file header.
@@ -155,7 +219,7 @@ For a pull request to be considered at all it has to meet these requirements:
 
 Some additional guidelines regarding source code are:
 
-- Files should start with a ``Copyright (C) 2017 Lightbend Inc. <http://www.lightbend.com>`` copyright header.
+- Files should start with a ``Copyright (C) 2018 Lightbend Inc. <https://www.lightbend.com>`` copyright header.
 - Keep the code [DRY](http://programmer.97things.oreilly.com/wiki/index.php/Don%27t_Repeat_Yourself).
 - Apply the [Boy Scout Rule](http://programmer.97things.oreilly.com/wiki/index.php/The_Boy_Scout_Rule) whenever you have the chance to.
 - Never delete or change existing copyright notices, just add additional info.
@@ -168,20 +232,26 @@ Whether or not a pull request (or parts of it) shall be back- or forward-ported 
 
 ## Documentation
 
-All documentation must abide by the following maxims:
+All documentation is preferred to be in Lightbend's standard documentation format [Paradox](https://github.com/lightbend/paradox), which among other things allows all code in the documentation to be externalized into compiled files and imported into the documentation.
 
-- Example code should be run as part of an automated test suite.
-- Version should be **programmatically** specifiable to the build.
-- Generation should be **completely automated** and available for scripting.
-- Artifacts that must be included in the Lightbend stack should be published to a maven “documentation” repository as documentation artifacts.
+To build the documentation locally:
 
-All documentation is preferred to be in Lightbend's standard documentation format [reStructuredText](http://doc.akka.io/docs/akka/snapshot/dev/documentation.html) compiled using Lightbend's customized [Sphinx](http://sphinx.pocoo.org/) based documentation generation system, which among other things allows all code in the documentation to be externalized into compiled files and imported into the documentation.
+```
+sbt
+akka-docs/paradox
+```
 
-To learn about how to build the documentation locally see the Reference Docs section about this topic: [Build the documentation]( http://doc.akka.io/docs/akka/2.4/dev/documentation.html#Build_the_documentation).
+The generated html documentation is in `akka-docs/target/paradox/site/main/index.html`.
 
-For more info, or for a starting point for new projects, look at the [Lightbend Documentation Template project](https://github.com/typesafehub/doc-template).
+### Scaladoc
 
-For larger projects that have invested a lot of time and resources into their current documentation and samples scheme (like for example Play), it is understandable that it will take some time to migrate to this new model. In these cases someone from the project needs to take the responsibility of manual QA and verifier for the documentation and samples.
+Akka generates class diagrams for the API documentation using ScalaDoc. 
+
+Links to methods in ScalaDoc comments should be formatted
+`[[Like#this]]`, because `[[this]]` does not work with genjavadoc, and
+IntelliJ warns about `[[#this]]`.
+
+The Scaladoc tool needs the `dot` command from the Graphviz software package to be installed to avoid errors. You can disable the diagram generation by adding the flag `-Dakka.scaladoc.diagrams=false`. After installing Graphviz, make sure you add the toolset to the PATH (definitely on Windows).
 
 ### JavaDoc
 
@@ -266,7 +336,12 @@ In order to force the `validatePullRequest` task to build the entire project, re
 changes one can use the special `PLS BUILD ALL` command (typed in a comment on GitHub, on the pull request), which will cause
 the validator to test all projects.
 
+Note, that `OK TO TEST` will only be picked up when the user asking for it is considered an admin. Public (!) members of the [akka organization](https://github.com/orgs/akka/people) are automatically considered admins and users manually declared admin in the Jenkins job (currently no one is explicitly listed). `PLS BUILD` and `PLS BUILD ALL` can be issued by everyone that is an admin or everyone who was whitelisted in the Jenkins Job (whitelisting != declaring someone an admin).
+
 ## Source style
+
+Sometimes it is convenient to place 'internal' classes in their own package.
+In such situations we prefer 'internal' over 'impl' as a package name.
 
 ### Scala style 
 

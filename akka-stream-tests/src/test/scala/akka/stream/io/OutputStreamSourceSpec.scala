@@ -1,6 +1,7 @@
 /**
- * Copyright (C) 2015-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2015-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.stream.io
 
 import java.io.IOException
@@ -10,11 +11,10 @@ import java.util.concurrent.TimeoutException
 import akka.actor.ActorSystem
 import akka.stream.Attributes.inputBuffer
 import akka.stream._
-import akka.stream.impl.ActorMaterializerImpl
-import akka.stream.impl.StreamSupervisor
+import akka.stream.impl.{ PhasedFusingActorMaterializer, StreamSupervisor }
 import akka.stream.impl.StreamSupervisor.Children
 import akka.stream.impl.io.OutputStreamSourceStage
-import akka.stream.scaladsl.{ Keep, Sink, Source, StreamConverters }
+import akka.stream.scaladsl.{ Keep, Sink, StreamConverters }
 import akka.stream.testkit.Utils._
 import akka.stream.testkit._
 import akka.stream.testkit.scaladsl.TestSink
@@ -139,7 +139,7 @@ class OutputStreamSourceSpec extends StreamSpec(UnboundedMailboxConfig) {
 
       try {
         StreamConverters.asOutputStream().runWith(TestSink.probe[ByteString])(materializer)
-        materializer.asInstanceOf[ActorMaterializerImpl].supervisor.tell(StreamSupervisor.GetChildren, testActor)
+        materializer.asInstanceOf[PhasedFusingActorMaterializer].supervisor.tell(StreamSupervisor.GetChildren, testActor)
         val ref = expectMsgType[Children].children.find(_.path.toString contains "outputStreamSource").get
         assertDispatcher(ref, "akka.stream.default-blocking-io-dispatcher")
       } finally shutdown(sys)
@@ -161,7 +161,10 @@ class OutputStreamSourceSpec extends StreamSpec(UnboundedMailboxConfig) {
 
       s.cancel()
       sourceProbe.expectMsg(GraphStageMessages.DownstreamFinish)
-      the[Exception] thrownBy outputStream.write(bytesArray) shouldBe a[IOException]
+
+      awaitAssert {
+        the[Exception] thrownBy outputStream.write(bytesArray) shouldBe a[IOException]
+      }
     }
 
     "fail to materialize with zero sized input buffer" in {

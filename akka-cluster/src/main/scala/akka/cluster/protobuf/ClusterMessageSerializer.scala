@@ -1,76 +1,116 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.cluster.protobuf
 
-import java.io.{ ByteArrayInputStream, ByteArrayOutputStream, ObjectOutputStream }
+import java.io.{ ByteArrayInputStream, ByteArrayOutputStream }
 import java.util.zip.{ GZIPInputStream, GZIPOutputStream }
-import java.{ lang ⇒ jl }
 
 import akka.actor.{ Address, ExtendedActorSystem }
 import akka.cluster._
 import akka.cluster.protobuf.msg.{ ClusterMessages ⇒ cm }
-import akka.serialization.BaseSerializer
-import akka.util.ClassLoaderObjectInputStream
+import akka.serialization.{ BaseSerializer, SerializationExtension, SerializerWithStringManifest }
 import akka.protobuf.{ ByteString, MessageLite }
 
 import scala.annotation.tailrec
-import scala.collection.JavaConverters._
 import scala.collection.immutable
+import scala.collection.JavaConverters._
 import scala.concurrent.duration.Deadline
-import java.io.NotSerializableException
-import akka.cluster.InternalClusterAction.ExitingConfirmed
+
+import akka.annotation.InternalApi
+import akka.cluster.InternalClusterAction._
+import akka.cluster.routing.{ ClusterRouterPool, ClusterRouterPoolSettings }
+import akka.routing.Pool
+import com.typesafe.config.{ Config, ConfigFactory, ConfigRenderOptions }
+
+/**
+ * INTERNAL API
+ */
+@InternalApi
+private[akka] object ClusterMessageSerializer {
+  // FIXME use short manifests when we can break wire compatibility
+  // needs to be full class names for backwards compatibility
+  val JoinManifest = s"akka.cluster.InternalClusterAction$$Join"
+  val WelcomeManifest = s"akka.cluster.InternalClusterAction$$Welcome"
+  val LeaveManifest = s"akka.cluster.ClusterUserAction$$Leave"
+  val DownManifest = s"akka.cluster.ClusterUserAction$$Down"
+  // #24622 wire compatibility
+  // we need to use this object name rather than classname to be able to join a 2.5.9 cluster during rolling upgrades
+  val InitJoinManifest = s"akka.cluster.InternalClusterAction$$InitJoin$$"
+  val InitJoinAckManifest = s"akka.cluster.InternalClusterAction$$InitJoinAck"
+  val InitJoinNackManifest = s"akka.cluster.InternalClusterAction$$InitJoinNack"
+  val HeartBeatManifest = s"akka.cluster.ClusterHeartbeatSender$$Heartbeat"
+  val HeartBeatRspManifest = s"akka.cluster.ClusterHeartbeatSender$$HeartbeatRsp"
+  val ExitingConfirmedManifest = s"akka.cluster.InternalClusterAction$$ExitingConfirmed"
+  val GossipStatusManifest = "akka.cluster.GossipStatus"
+  val GossipEnvelopeManifest = "akka.cluster.GossipEnvelope"
+  val ClusterRouterPoolManifest = "akka.cluster.routing.ClusterRouterPool"
+
+  private final val BufferSize = 1024 * 4
+}
 
 /**
  * Protobuf serializer of cluster messages.
  */
-class ClusterMessageSerializer(val system: ExtendedActorSystem) extends BaseSerializer {
+final class ClusterMessageSerializer(val system: ExtendedActorSystem) extends SerializerWithStringManifest with BaseSerializer {
+  import ClusterMessageSerializer._
+  private lazy val serialization = SerializationExtension(system)
 
-  private final val BufferSize = 1024 * 4
   // must be lazy because serializer is initialized from Cluster extension constructor
   private lazy val GossipTimeToLive = Cluster(system).settings.GossipTimeToLive
 
-  private val fromBinaryMap = collection.immutable.HashMap[Class[_ <: ClusterMessage], Array[Byte] ⇒ AnyRef](
-    classOf[InternalClusterAction.Join] → {
-      case bytes ⇒
-        val m = cm.Join.parseFrom(bytes)
-        InternalClusterAction.Join(
-          uniqueAddressFromProto(m.getNode),
-          Set.empty[String] ++ m.getRolesList.asScala)
-    },
-    classOf[InternalClusterAction.Welcome] → {
-      case bytes ⇒
-        val m = cm.Welcome.parseFrom(decompress(bytes))
-        InternalClusterAction.Welcome(uniqueAddressFromProto(m.getFrom), gossipFromProto(m.getGossip))
-    },
-    classOf[ClusterUserAction.Leave] → (bytes ⇒ ClusterUserAction.Leave(addressFromBinary(bytes))),
-    classOf[ClusterUserAction.Down] → (bytes ⇒ ClusterUserAction.Down(addressFromBinary(bytes))),
-    InternalClusterAction.InitJoin.getClass → (_ ⇒ InternalClusterAction.InitJoin),
-    classOf[InternalClusterAction.InitJoinAck] → (bytes ⇒ InternalClusterAction.InitJoinAck(addressFromBinary(bytes))),
-    classOf[InternalClusterAction.InitJoinNack] → (bytes ⇒ InternalClusterAction.InitJoinNack(addressFromBinary(bytes))),
-    classOf[ClusterHeartbeatSender.Heartbeat] → (bytes ⇒ ClusterHeartbeatSender.Heartbeat(addressFromBinary(bytes))),
-    classOf[ClusterHeartbeatSender.HeartbeatRsp] → (bytes ⇒ ClusterHeartbeatSender.HeartbeatRsp(uniqueAddressFromBinary(bytes))),
-    classOf[ExitingConfirmed] → (bytes ⇒ InternalClusterAction.ExitingConfirmed(uniqueAddressFromBinary(bytes))),
-    classOf[GossipStatus] → gossipStatusFromBinary,
-    classOf[GossipEnvelope] → gossipEnvelopeFromBinary)
-
-  def includeManifest: Boolean = true
+  def manifest(o: AnyRef): String = o match {
+    case _: InternalClusterAction.Join          ⇒ JoinManifest
+    case _: InternalClusterAction.Welcome       ⇒ WelcomeManifest
+    case _: ClusterUserAction.Leave             ⇒ LeaveManifest
+    case _: ClusterUserAction.Down              ⇒ DownManifest
+    case _: InternalClusterAction.InitJoin      ⇒ InitJoinManifest
+    case _: InternalClusterAction.InitJoinAck   ⇒ InitJoinAckManifest
+    case _: InternalClusterAction.InitJoinNack  ⇒ InitJoinNackManifest
+    case _: ClusterHeartbeatSender.Heartbeat    ⇒ HeartBeatManifest
+    case _: ClusterHeartbeatSender.HeartbeatRsp ⇒ HeartBeatRspManifest
+    case _: ExitingConfirmed                    ⇒ ExitingConfirmedManifest
+    case _: GossipStatus                        ⇒ GossipStatusManifest
+    case _: GossipEnvelope                      ⇒ GossipEnvelopeManifest
+    case _: ClusterRouterPool                   ⇒ ClusterRouterPoolManifest
+    case _ ⇒
+      throw new IllegalArgumentException(s"Can't serialize object of type ${o.getClass} in [${getClass.getName}]")
+  }
 
   def toBinary(obj: AnyRef): Array[Byte] = obj match {
-    case ClusterHeartbeatSender.Heartbeat(from)       ⇒ addressToProtoByteArray(from)
-    case ClusterHeartbeatSender.HeartbeatRsp(from)    ⇒ uniqueAddressToProtoByteArray(from)
-    case m: GossipEnvelope                            ⇒ gossipEnvelopeToProto(m).toByteArray
-    case m: GossipStatus                              ⇒ gossipStatusToProto(m).toByteArray
-    case InternalClusterAction.Join(node, roles)      ⇒ joinToProto(node, roles).toByteArray
-    case InternalClusterAction.Welcome(from, gossip)  ⇒ compress(welcomeToProto(from, gossip))
-    case ClusterUserAction.Leave(address)             ⇒ addressToProtoByteArray(address)
-    case ClusterUserAction.Down(address)              ⇒ addressToProtoByteArray(address)
-    case InternalClusterAction.InitJoin               ⇒ cm.Empty.getDefaultInstance.toByteArray
-    case InternalClusterAction.InitJoinAck(address)   ⇒ addressToProtoByteArray(address)
-    case InternalClusterAction.InitJoinNack(address)  ⇒ addressToProtoByteArray(address)
-    case InternalClusterAction.ExitingConfirmed(node) ⇒ uniqueAddressToProtoByteArray(node)
+    case ClusterHeartbeatSender.Heartbeat(from)                  ⇒ addressToProtoByteArray(from)
+    case ClusterHeartbeatSender.HeartbeatRsp(from)               ⇒ uniqueAddressToProtoByteArray(from)
+    case m: GossipEnvelope                                       ⇒ gossipEnvelopeToProto(m).toByteArray
+    case m: GossipStatus                                         ⇒ gossipStatusToProto(m).toByteArray
+    case InternalClusterAction.Join(node, roles)                 ⇒ joinToProto(node, roles).toByteArray
+    case InternalClusterAction.Welcome(from, gossip)             ⇒ compress(welcomeToProto(from, gossip))
+    case ClusterUserAction.Leave(address)                        ⇒ addressToProtoByteArray(address)
+    case ClusterUserAction.Down(address)                         ⇒ addressToProtoByteArray(address)
+    case InternalClusterAction.InitJoin(config)                  ⇒ initJoinToProto(config).toByteArray
+    case InternalClusterAction.InitJoinAck(address, configCheck) ⇒ initJoinAckToProto(address, configCheck).toByteArray
+    case InternalClusterAction.InitJoinNack(address)             ⇒ addressToProtoByteArray(address)
+    case InternalClusterAction.ExitingConfirmed(node)            ⇒ uniqueAddressToProtoByteArray(node)
+    case rp: ClusterRouterPool                                   ⇒ clusterRouterPoolToProtoByteArray(rp)
     case _ ⇒
-      throw new IllegalArgumentException(s"Can't serialize object of type ${obj.getClass}")
+      throw new IllegalArgumentException(s"Can't serialize object of type ${obj.getClass} in [${getClass.getName}]")
+  }
+
+  def fromBinary(bytes: Array[Byte], manifest: String): AnyRef = manifest match {
+    case HeartBeatManifest         ⇒ deserializeHeartBeat(bytes)
+    case HeartBeatRspManifest      ⇒ deserializeHeartBeatRsp(bytes)
+    case GossipStatusManifest      ⇒ deserializeGossipStatus(bytes)
+    case GossipEnvelopeManifest    ⇒ deserializeGossipEnvelope(bytes)
+    case InitJoinManifest          ⇒ deserializeInitJoin(bytes)
+    case InitJoinAckManifest       ⇒ deserializeInitJoinAck(bytes)
+    case InitJoinNackManifest      ⇒ deserializeInitJoinNack(bytes)
+    case JoinManifest              ⇒ deserializeJoin(bytes)
+    case WelcomeManifest           ⇒ deserializeWelcome(bytes)
+    case LeaveManifest             ⇒ deserializeLeave(bytes)
+    case DownManifest              ⇒ deserializeDown(bytes)
+    case ExitingConfirmedManifest  ⇒ deserializeExitingConfirmed(bytes)
+    case ClusterRouterPoolManifest ⇒ deserializeClusterRouterPool(bytes)
+    case _                         ⇒ throw new IllegalArgumentException(s"Unknown manifest [${manifest}]")
   }
 
   def compress(msg: MessageLite): Array[Byte] = {
@@ -98,21 +138,13 @@ class ClusterMessageSerializer(val system: ExtendedActorSystem) extends BaseSeri
     out.toByteArray
   }
 
-  def fromBinary(bytes: Array[Byte], clazz: Option[Class[_]]): AnyRef = clazz match {
-    case Some(c) ⇒ fromBinaryMap.get(c.asInstanceOf[Class[ClusterMessage]]) match {
-      case Some(f) ⇒ f(bytes)
-      case None    ⇒ throw new NotSerializableException(s"Unimplemented deserialization of message class $c in ClusterSerializer")
-    }
-    case _ ⇒ throw new IllegalArgumentException("Need a cluster message class to be able to deserialize bytes in ClusterSerializer")
-  }
-
   private def addressFromBinary(bytes: Array[Byte]): Address =
     addressFromProto(cm.Address.parseFrom(bytes))
 
   private def uniqueAddressFromBinary(bytes: Array[Byte]): UniqueAddress =
     uniqueAddressFromProto(cm.UniqueAddress.parseFrom(bytes))
 
-  private def addressToProto(address: Address): cm.Address.Builder = address match {
+  private[akka] def addressToProto(address: Address): cm.Address.Builder = address match {
     case Address(protocol, actorSystem, Some(host), Some(port)) ⇒
       cm.Address.newBuilder().setSystem(actorSystem).setHostname(host).setPort(port).setProtocol(protocol)
     case _ ⇒ throw new IllegalArgumentException(s"Address [$address] could not be serialized: host or port missing.")
@@ -129,6 +161,43 @@ class ClusterMessageSerializer(val system: ExtendedActorSystem) extends BaseSeri
 
   private def uniqueAddressToProtoByteArray(uniqueAddress: UniqueAddress): Array[Byte] =
     uniqueAddressToProto(uniqueAddress).build.toByteArray
+
+  private def clusterRouterPoolToProtoByteArray(rp: ClusterRouterPool): Array[Byte] = {
+    val builder = cm.ClusterRouterPool.newBuilder()
+    builder.setPool(poolToProto(rp.local))
+    builder.setSettings(clusterRouterPoolSettingsToProto(rp.settings))
+    builder.build().toByteArray
+  }
+
+  private def poolToProto(pool: Pool): cm.Pool = {
+    val builder = cm.Pool.newBuilder()
+    val serializer = serialization.findSerializerFor(pool)
+    builder.setSerializerId(serializer.identifier)
+      .setData(ByteString.copyFrom(serializer.toBinary(pool)))
+    serializer match {
+      case ser: SerializerWithStringManifest ⇒
+        builder.setManifest(ser.manifest(pool))
+      case _ ⇒
+        builder.setManifest(
+          if (serializer.includeManifest) pool.getClass.getName
+          else ""
+        )
+    }
+    builder.build()
+  }
+
+  private def clusterRouterPoolSettingsToProto(settings: ClusterRouterPoolSettings): cm.ClusterRouterPoolSettings = {
+    val builder = cm.ClusterRouterPoolSettings.newBuilder()
+    builder.setAllowLocalRoutees(settings.allowLocalRoutees)
+      .setMaxInstancesPerNode(settings.maxInstancesPerNode)
+      .setTotalInstances(settings.totalInstances)
+      .addAllUseRoles(settings.useRoles.asJava)
+
+    // for backwards compatibility
+    settings.useRole.foreach(builder.setUseRole)
+
+    builder.build()
+  }
 
   // we don't care about races here since it's just a cache
   @volatile
@@ -154,6 +223,71 @@ class ClusterMessageSerializer(val system: ExtendedActorSystem) extends BaseSeri
       systemCache = s
       s
     }
+  }
+
+  private def deserializeJoin(bytes: Array[Byte]): InternalClusterAction.Join = {
+    val m = cm.Join.parseFrom(bytes)
+    val roles = Set.empty[String] ++ m.getRolesList.asScala
+    InternalClusterAction.Join(
+      uniqueAddressFromProto(m.getNode),
+      if (roles.exists(_.startsWith(ClusterSettings.DcRolePrefix))) roles
+      else roles + (ClusterSettings.DcRolePrefix + ClusterSettings.DefaultDataCenter)
+    )
+  }
+
+  private def deserializeWelcome(bytes: Array[Byte]): InternalClusterAction.Welcome = {
+    val m = cm.Welcome.parseFrom(decompress(bytes))
+    InternalClusterAction.Welcome(uniqueAddressFromProto(m.getFrom), gossipFromProto(m.getGossip))
+  }
+
+  private def deserializeLeave(bytes: Array[Byte]): ClusterUserAction.Leave = {
+    ClusterUserAction.Leave(addressFromBinary(bytes))
+  }
+
+  private def deserializeDown(bytes: Array[Byte]): ClusterUserAction.Down = {
+    ClusterUserAction.Down(addressFromBinary(bytes))
+  }
+
+  private def deserializeInitJoin(bytes: Array[Byte]): InternalClusterAction.InitJoin = {
+    val m = cm.InitJoin.parseFrom(bytes)
+    if (m.hasCurrentConfig)
+      InternalClusterAction.InitJoin(ConfigFactory.parseString(m.getCurrentConfig))
+    else
+      InternalClusterAction.InitJoin(ConfigFactory.empty)
+  }
+
+  private def deserializeInitJoinAck(bytes: Array[Byte]): InternalClusterAction.InitJoinAck = {
+    try {
+      val i = cm.InitJoinAck.parseFrom(bytes)
+      val configCheck =
+        i.getConfigCheck.getType match {
+          case cm.ConfigCheck.Type.CompatibleConfig   ⇒ CompatibleConfig(ConfigFactory.parseString(i.getConfigCheck.getClusterConfig))
+          case cm.ConfigCheck.Type.IncompatibleConfig ⇒ IncompatibleConfig
+          case cm.ConfigCheck.Type.UncheckedConfig    ⇒ UncheckedConfig
+        }
+
+      InternalClusterAction.InitJoinAck(addressFromProto(i.getAddress), configCheck)
+    } catch {
+      case ex: akka.protobuf.InvalidProtocolBufferException ⇒
+        // nodes previous to 2.5.9 sends just an address
+        InternalClusterAction.InitJoinAck(addressFromBinary(bytes), UncheckedConfig)
+    }
+  }
+
+  private def deserializeExitingConfirmed(bytes: Array[Byte]): InternalClusterAction.ExitingConfirmed = {
+    InternalClusterAction.ExitingConfirmed(uniqueAddressFromBinary(bytes))
+  }
+
+  private def deserializeHeartBeatRsp(bytes: Array[Byte]): ClusterHeartbeatSender.HeartbeatRsp = {
+    ClusterHeartbeatSender.HeartbeatRsp(uniqueAddressFromBinary(bytes))
+  }
+
+  private def deserializeHeartBeat(bytes: Array[Byte]): ClusterHeartbeatSender.Heartbeat = {
+    ClusterHeartbeatSender.Heartbeat(addressFromBinary(bytes))
+  }
+
+  private def deserializeInitJoinNack(bytes: Array[Byte]): InternalClusterAction.InitJoinNack = {
+    InternalClusterAction.InitJoinNack(addressFromBinary(bytes))
   }
 
   private def addressFromProto(address: cm.Address): Address =
@@ -198,12 +332,39 @@ class ClusterMessageSerializer(val system: ExtendedActorSystem) extends BaseSeri
   private def joinToProto(node: UniqueAddress, roles: Set[String]): cm.Join =
     cm.Join.newBuilder().setNode(uniqueAddressToProto(node)).addAllRoles(roles.asJava).build()
 
+  private def initJoinToProto(currentConfig: Config): cm.InitJoin = {
+    cm.InitJoin.newBuilder()
+      .setCurrentConfig(currentConfig.root.render(ConfigRenderOptions.concise))
+      .build()
+  }
+
+  private def initJoinAckToProto(address: Address, configCheck: ConfigCheck): cm.InitJoinAck = {
+
+    val configCheckBuilder = cm.ConfigCheck.newBuilder()
+    configCheck match {
+      case UncheckedConfig ⇒
+        configCheckBuilder.setType(cm.ConfigCheck.Type.UncheckedConfig)
+
+      case IncompatibleConfig ⇒
+        configCheckBuilder.setType(cm.ConfigCheck.Type.IncompatibleConfig)
+
+      case CompatibleConfig(conf) ⇒
+        configCheckBuilder
+          .setType(cm.ConfigCheck.Type.CompatibleConfig)
+          .setClusterConfig(conf.root.render(ConfigRenderOptions.concise))
+    }
+    cm.InitJoinAck.newBuilder().
+      setAddress(addressToProto(address)).
+      setConfigCheck(configCheckBuilder.build()).
+      build()
+  }
+
   private def welcomeToProto(from: UniqueAddress, gossip: Gossip): cm.Welcome =
     cm.Welcome.newBuilder().setFrom(uniqueAddressToProto(from)).setGossip(gossipToProto(gossip)).build()
 
   private def gossipToProto(gossip: Gossip): cm.Gossip.Builder = {
     val allMembers = gossip.members.toVector
-    val allAddresses: Vector[UniqueAddress] = allMembers.map(_.uniqueAddress)
+    val allAddresses: Vector[UniqueAddress] = allMembers.map(_.uniqueAddress) ++ gossip.tombstones.keys
     val addressMapping = allAddresses.zipWithIndex.toMap
     val allRoles = allMembers.foldLeft(Set.empty[String])((acc, m) ⇒ acc union m.roles).to[Vector]
     val roleMapping = allRoles.zipWithIndex.toMap
@@ -211,6 +372,7 @@ class ClusterMessageSerializer(val system: ExtendedActorSystem) extends BaseSeri
     val hashMapping = allHashes.zipWithIndex.toMap
 
     def mapUniqueAddress(uniqueAddress: UniqueAddress): Integer = mapWithErrorMessage(addressMapping, uniqueAddress, "address")
+
     def mapRole(role: String): Integer = mapWithErrorMessage(roleMapping, role, "role")
 
     def memberToProto(member: Member) =
@@ -230,6 +392,12 @@ class ClusterMessageSerializer(val system: ExtendedActorSystem) extends BaseSeri
       }
     }
 
+    def tombstoneToProto(t: (UniqueAddress, Long)): cm.Tombstone =
+      cm.Tombstone.newBuilder()
+        .setAddressIndex(mapUniqueAddress(t._1))
+        .setTimestamp(t._2)
+        .build()
+
     val reachability = reachabilityToProto(gossip.overview.reachability)
     val members = gossip.members.map(memberToProto)
     val seen = gossip.overview.seen.map(mapUniqueAddress)
@@ -238,8 +406,12 @@ class ClusterMessageSerializer(val system: ExtendedActorSystem) extends BaseSeri
       addAllObserverReachability(reachability.map(_.build).asJava)
 
     cm.Gossip.newBuilder().addAllAllAddresses(allAddresses.map(uniqueAddressToProto(_).build).asJava).
-      addAllAllRoles(allRoles.asJava).addAllAllHashes(allHashes.asJava).addAllMembers(members.map(_.build).asJava).
-      setOverview(overview).setVersion(vectorClockToProto(gossip.version, hashMapping))
+      addAllAllRoles(allRoles.asJava)
+      .addAllAllHashes(allHashes.asJava)
+      .addAllMembers(members.map(_.build).asJava)
+      .setOverview(overview)
+      .setVersion(vectorClockToProto(gossip.version, hashMapping))
+      .addAllTombstones(gossip.tombstones.map(tombstoneToProto).asJava)
   }
 
   private def vectorClockToProto(version: VectorClock, hashMapping: Map[String, Int]): cm.VectorClock.Builder = {
@@ -264,10 +436,10 @@ class ClusterMessageSerializer(val system: ExtendedActorSystem) extends BaseSeri
       setVersion(vectorClockToProto(status.version, hashMapping)).build()
   }
 
-  private def gossipEnvelopeFromBinary(bytes: Array[Byte]): GossipEnvelope =
+  private def deserializeGossipEnvelope(bytes: Array[Byte]): GossipEnvelope =
     gossipEnvelopeFromProto(cm.GossipEnvelope.parseFrom(bytes))
 
-  private def gossipStatusFromBinary(bytes: Array[Byte]): GossipStatus =
+  private def deserializeGossipStatus(bytes: Array[Byte]): GossipStatus =
     gossipStatusFromProto(cm.GossipStatus.parseFrom(bytes))
 
   private def gossipFromProto(gossip: cm.Gossip): Gossip = {
@@ -295,15 +467,35 @@ class ClusterMessageSerializer(val system: ExtendedActorSystem) extends BaseSeri
 
     def memberFromProto(member: cm.Member) =
       new Member(addressMapping(member.getAddressIndex), member.getUpNumber, memberStatusFromInt(member.getStatus.getNumber),
-        member.getRolesIndexesList.asScala.map(roleMapping(_))(breakOut))
+        rolesFromProto(member.getRolesIndexesList.asScala))
+
+    def rolesFromProto(roleIndexes: Seq[Integer]): Set[String] = {
+      var containsDc = false
+      var roles = Set.empty[String]
+
+      for {
+        roleIndex ← roleIndexes
+        role = roleMapping(roleIndex)
+      } {
+        if (role.startsWith(ClusterSettings.DcRolePrefix)) containsDc = true
+        roles += role
+      }
+
+      if (!containsDc) roles + (ClusterSettings.DcRolePrefix + ClusterSettings.DefaultDataCenter)
+      else roles
+    }
+
+    def tombstoneFromProto(tombstone: cm.Tombstone): (UniqueAddress, Long) =
+      (addressMapping(tombstone.getAddressIndex), tombstone.getTimestamp)
 
     val members: immutable.SortedSet[Member] = gossip.getMembersList.asScala.map(memberFromProto)(breakOut)
 
     val reachability = reachabilityFromProto(gossip.getOverview.getObserverReachabilityList.asScala)
     val seen: Set[UniqueAddress] = gossip.getOverview.getSeenList.asScala.map(addressMapping(_))(breakOut)
     val overview = GossipOverview(seen, reachability)
+    val tombstones: Map[UniqueAddress, Long] = gossip.getTombstonesList.asScala.map(tombstoneFromProto)(breakOut)
 
-    Gossip(members, overview, vectorClockFromProto(gossip.getVersion, hashMapping))
+    Gossip(members, overview, vectorClockFromProto(gossip.getVersion, hashMapping), tombstones)
   }
 
   private def vectorClockFromProto(version: cm.VectorClock, hashMapping: immutable.Seq[String]) = {
@@ -322,5 +514,32 @@ class ClusterMessageSerializer(val system: ExtendedActorSystem) extends BaseSeri
     GossipStatus(uniqueAddressFromProto(status.getFrom), vectorClockFromProto(
       status.getVersion,
       status.getAllHashesList.asScala.toVector))
+
+  def deserializeClusterRouterPool(bytes: Array[Byte]): ClusterRouterPool = {
+    val crp = cm.ClusterRouterPool.parseFrom(bytes)
+
+    ClusterRouterPool(
+      poolFromProto(crp.getPool),
+      clusterRouterPoolSettingsFromProto(crp.getSettings)
+    )
+  }
+
+  private def poolFromProto(pool: cm.Pool): Pool = {
+    serialization.deserialize(pool.getData.toByteArray, pool.getSerializerId, pool.getManifest).get.asInstanceOf[Pool]
+  }
+
+  private def clusterRouterPoolSettingsFromProto(crps: cm.ClusterRouterPoolSettings): ClusterRouterPoolSettings = {
+    // For backwards compatibility, useRoles is the combination of getUseRole and getUseRolesList
+    ClusterRouterPoolSettings(
+      totalInstances = crps.getTotalInstances,
+      maxInstancesPerNode = crps.getMaxInstancesPerNode,
+      allowLocalRoutees = crps.getAllowLocalRoutees,
+      useRoles = if (crps.hasUseRole) {
+        crps.getUseRolesList.asScala.toSet + crps.getUseRole
+      } else {
+        crps.getUseRolesList.asScala.toSet
+      }
+    )
+  }
 
 }

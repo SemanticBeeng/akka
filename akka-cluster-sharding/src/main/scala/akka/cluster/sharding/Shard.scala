@@ -1,6 +1,7 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.cluster.sharding
 
 import java.net.URLEncoder
@@ -12,9 +13,9 @@ import akka.actor.Deploy
 import akka.actor.Props
 import akka.actor.Terminated
 import akka.cluster.sharding.Shard.ShardCommand
-import akka.persistence._
 import akka.actor.Actor
 
+import akka.util.MessageBufferMap
 import scala.concurrent.Future
 import scala.concurrent.duration.FiniteDuration
 import akka.cluster.Cluster
@@ -22,7 +23,17 @@ import akka.cluster.ddata.ORSet
 import akka.cluster.ddata.ORSetKey
 import akka.cluster.ddata.Replicator._
 import akka.actor.Stash
-import akka.cluster.ddata.DistributedData
+import akka.persistence.PersistentActor
+import akka.persistence.SnapshotOffer
+import akka.persistence.SaveSnapshotSuccess
+import akka.persistence.DeleteSnapshotsFailure
+import akka.persistence.DeleteMessagesSuccess
+import akka.persistence.SaveSnapshotFailure
+import akka.persistence.DeleteMessagesFailure
+import akka.persistence.DeleteSnapshotsSuccess
+import akka.persistence.SnapshotSelectionCriteria
+import akka.persistence.RecoveryCompleted
+import akka.actor.NoSerializationVerificationNeeded
 
 /**
  * INTERNAL API
@@ -37,7 +48,7 @@ private[akka] object Shard {
   sealed trait ShardCommand
 
   /**
-   * When an remembering entities and the entity stops without issuing a `Passivate`, we
+   * When remembering entities and the entity stops without issuing a `Passivate`, we
    * restart it after a back off using this message.
    */
   final case class RestartEntity(entity: EntityId) extends ShardCommand
@@ -96,7 +107,7 @@ private[akka] object Shard {
   def props(
     typeName:           String,
     shardId:            ShardRegion.ShardId,
-    entityProps:        Props,
+    entityProps:        String ⇒ Props,
     settings:           ClusterShardingSettings,
     extractEntityId:    ShardRegion.ExtractEntityId,
     extractShardId:     ShardRegion.ExtractShardId,
@@ -126,7 +137,7 @@ private[akka] object Shard {
 private[akka] class Shard(
   typeName:           String,
   shardId:            ShardRegion.ShardId,
-  entityProps:        Props,
+  entityProps:        String ⇒ Props,
   settings:           ClusterShardingSettings,
   extractEntityId:    ShardRegion.ExtractEntityId,
   extractShardId:     ShardRegion.ExtractShardId,
@@ -143,15 +154,13 @@ private[akka] class Shard(
   var idByRef = Map.empty[ActorRef, EntityId]
   var refById = Map.empty[EntityId, ActorRef]
   var passivating = Set.empty[ActorRef]
-  var messageBuffers = Map.empty[EntityId, Vector[(Msg, ActorRef)]]
+  val messageBuffers = new MessageBufferMap[EntityId]
 
   var handOffStopper: Option[ActorRef] = None
 
   initialized()
 
   def initialized(): Unit = context.parent ! ShardInitialized(shardId)
-
-  def totalBufferSize = messageBuffers.foldLeft(0) { (sum, entity) ⇒ sum + entity._2.size }
 
   def processChange[E <: StateChange](event: E)(handler: E ⇒ Unit): Unit =
     handler(event)
@@ -162,6 +171,8 @@ private[akka] class Shard(
     case Terminated(ref)                         ⇒ receiveTerminated(ref)
     case msg: CoordinatorMessage                 ⇒ receiveCoordinatorMessage(msg)
     case msg: ShardCommand                       ⇒ receiveShardCommand(msg)
+    case msg: ShardRegion.StartEntity            ⇒ receiveStartEntity(msg)
+    case msg: ShardRegion.StartEntityAck         ⇒ receiveStartEntityAck(msg)
     case msg: ShardRegionCommand                 ⇒ receiveShardRegionCommand(msg)
     case msg: ShardQuery                         ⇒ receiveShardQuery(msg)
     case msg if extractEntityId.isDefinedAt(msg) ⇒ deliverMessage(msg, sender())
@@ -169,7 +180,27 @@ private[akka] class Shard(
 
   def receiveShardCommand(msg: ShardCommand): Unit = msg match {
     case RestartEntity(id)    ⇒ getEntity(id)
-    case RestartEntities(ids) ⇒ ids foreach getEntity
+    case RestartEntities(ids) ⇒ restartEntities(ids)
+  }
+
+  def receiveStartEntity(start: ShardRegion.StartEntity): Unit = {
+    log.debug("Got a request from [{}] to start entity [{}] in shard [{}]", sender(), start.entityId, shardId)
+    getEntity(start.entityId)
+    sender() ! ShardRegion.StartEntityAck(start.entityId, shardId)
+  }
+
+  def receiveStartEntityAck(ack: ShardRegion.StartEntityAck): Unit = {
+    if (ack.shardId != shardId && state.entities.contains(ack.entityId)) {
+      log.debug("Entity [{}] previously owned by shard [{}] started in shard [{}]", ack.entityId, shardId, ack.shardId)
+      processChange(EntityStopped(ack.entityId)) { _ ⇒
+        state = state.copy(state.entities - ack.entityId)
+        messageBuffers.remove(ack.entityId)
+      }
+    }
+  }
+
+  def restartEntities(ids: Set[EntityId]): Unit = {
+    context.actorOf(RememberEntityStarter.props(context.parent, typeName, shardId, ids, settings, sender()))
   }
 
   def receiveShardRegionCommand(msg: ShardRegionCommand): Unit = msg match {
@@ -216,7 +247,9 @@ private[akka] class Shard(
 
   def entityTerminated(ref: ActorRef): Unit = {
     val id = idByRef(ref)
-    if (messageBuffers.getOrElse(id, Vector.empty).nonEmpty) {
+    idByRef -= ref
+    refById -= id
+    if (messageBuffers.getOrEmpty(id).nonEmpty) {
       log.debug("Starting entity [{}] again, there are buffered messages for it", id)
       sendMsgBuffer(EntityStarted(id))
     } else {
@@ -228,36 +261,31 @@ private[akka] class Shard(
 
   def passivate(entity: ActorRef, stopMessage: Any): Unit = {
     idByRef.get(entity) match {
-      case Some(id) => if (!messageBuffers.contains(id)) {
+      case Some(id) ⇒ if (!messageBuffers.contains(id)) {
         log.debug("Passivating started on entity {}", id)
 
         passivating = passivating + entity
-        messageBuffers = messageBuffers.updated(id, Vector.empty)
+        messageBuffers.add(id)
         entity ! stopMessage
       } else {
         log.debug("Passivation already in progress for {}. Not sending stopMessage back to entity.", entity)
       }
-      case None    => log.debug("Unknown entity {}. Not sending stopMessage back to entity.", entity)
+      case None ⇒ log.debug("Unknown entity {}. Not sending stopMessage back to entity.", entity)
     }
   }
 
   // EntityStopped handler
   def passivateCompleted(event: EntityStopped): Unit = {
-    log.debug("Entity stopped [{}]", event.entityId)
-
-    val ref = refById(event.entityId)
-    idByRef -= ref
-    refById -= event.entityId
-
+    log.debug("Entity stopped after passivation [{}]", event.entityId)
     state = state.copy(state.entities - event.entityId)
-    messageBuffers = messageBuffers - event.entityId
+    messageBuffers.remove(event.entityId)
   }
 
   // EntityStarted handler
   def sendMsgBuffer(event: EntityStarted): Unit = {
     //Get the buffered messages and remove the buffer
-    val messages = messageBuffers.getOrElse(event.entityId, Vector.empty)
-    messageBuffers = messageBuffers - event.entityId
+    val messages = messageBuffers.getOrEmpty(event.entityId)
+    messageBuffers.remove(event.entityId)
 
     if (messages.nonEmpty) {
       log.debug("Sending message buffer for entity [{}] ([{}] messages)", event.entityId, messages.size)
@@ -265,7 +293,7 @@ private[akka] class Shard(
 
       //Now there is no deliveryBuffer we can try to redeliver
       // and as the child exists, the message will be directly forwarded
-      messages foreach {
+      messages.foreach {
         case (msg, snd) ⇒ deliverMessage(msg, snd)
       }
     }
@@ -276,17 +304,20 @@ private[akka] class Shard(
     if (id == null || id == "") {
       log.warning("Id must not be empty, dropping message [{}]", msg.getClass.getName)
       context.system.deadLetters ! msg
+    } else if (payload.isInstanceOf[ShardRegion.StartEntity]) {
+      // in case it was wrapped, used in Typed
+      receiveStartEntity(payload.asInstanceOf[ShardRegion.StartEntity])
     } else {
-      messageBuffers.get(id) match {
-        case None ⇒ deliverTo(id, msg, payload, snd)
+      messageBuffers.contains(id) match {
+        case false ⇒ deliverTo(id, msg, payload, snd)
 
-        case Some(buf) if totalBufferSize >= bufferSize ⇒
+        case true if messageBuffers.totalSize >= bufferSize ⇒
           log.debug("Buffer is full, dropping message for entity [{}]", id)
           context.system.deadLetters ! msg
 
-        case Some(buf) ⇒
+        case true ⇒
           log.debug("Message for entity [{}] buffered", id)
-          messageBuffers = messageBuffers.updated(id, buf :+ ((msg, snd)))
+          messageBuffers.append(id, msg, snd)
       }
     }
   }
@@ -304,12 +335,69 @@ private[akka] class Shard(
     context.child(name).getOrElse {
       log.debug("Starting entity [{}] in shard [{}]", id, shardId)
 
-      val a = context.watch(context.actorOf(entityProps, name))
+      val a = context.watch(context.actorOf(entityProps(id), name))
       idByRef = idByRef.updated(a, id)
       refById = refById.updated(id, a)
       state = state.copy(state.entities + id)
       a
     }
+  }
+}
+
+private[akka] object RememberEntityStarter {
+  def props(
+    region:    ActorRef,
+    typeName:  String,
+    shardId:   ShardRegion.ShardId,
+    ids:       Set[ShardRegion.EntityId],
+    settings:  ClusterShardingSettings,
+    requestor: ActorRef) =
+    Props(new RememberEntityStarter(region, typeName, shardId, ids, settings, requestor))
+
+  private case object Tick extends NoSerializationVerificationNeeded
+}
+
+/**
+ * INTERNAL API: Actor responsible for starting entities when rememberEntities is enabled
+ */
+private[akka] class RememberEntityStarter(
+  region:    ActorRef,
+  typeName:  String,
+  shardId:   ShardRegion.ShardId,
+  ids:       Set[ShardRegion.EntityId],
+  settings:  ClusterShardingSettings,
+  requestor: ActorRef) extends Actor with ActorLogging {
+
+  import context.dispatcher
+  import RememberEntityStarter.Tick
+
+  var waitingForAck = ids
+
+  sendStart(ids)
+
+  val tickTask = {
+    val resendInterval = settings.tuningParameters.retryInterval
+    context.system.scheduler.schedule(resendInterval, resendInterval, self, Tick)
+  }
+
+  def sendStart(ids: Set[ShardRegion.EntityId]): Unit = {
+    ids.foreach(id ⇒ region ! ShardRegion.StartEntity(id))
+  }
+
+  override def receive = {
+    case ack: ShardRegion.StartEntityAck ⇒
+      waitingForAck -= ack.entityId
+      // inform whoever requested the start that it happened
+      requestor ! ack
+      if (waitingForAck.isEmpty) context.stop(self)
+
+    case Tick ⇒
+      sendStart(waitingForAck)
+
+  }
+
+  override def postStop(): Unit = {
+    tickTask.cancel()
   }
 }
 
@@ -344,7 +432,9 @@ private[akka] trait RememberingShard { selfType: Shard ⇒
   override def entityTerminated(ref: ActorRef): Unit = {
     import settings.tuningParameters._
     val id = idByRef(ref)
-    if (messageBuffers.getOrElse(id, Vector.empty).nonEmpty) {
+    idByRef -= ref
+    refById -= id
+    if (messageBuffers.getOrEmpty(id).nonEmpty) {
       //Note; because we're not persisting the EntityStopped, we don't need
       // to persist the EntityStarted either.
       log.debug("Starting entity [{}] again, there are buffered messages for it", id)
@@ -368,7 +458,7 @@ private[akka] trait RememberingShard { selfType: Shard ⇒
 
       case None ⇒
         //Note; we only do this if remembering, otherwise the buffer is an overhead
-        messageBuffers = messageBuffers.updated(id, Vector((msg, snd)))
+        messageBuffers.append(id, msg, snd)
         processChange(EntityStarted(id))(sendMsgBuffer)
     }
   }
@@ -387,7 +477,7 @@ private[akka] trait RememberingShard { selfType: Shard ⇒
 private[akka] class PersistentShard(
   typeName:              String,
   shardId:               ShardRegion.ShardId,
-  entityProps:           Props,
+  entityProps:           String ⇒ Props,
   override val settings: ClusterShardingSettings,
   extractEntityId:       ShardRegion.ExtractEntityId,
   extractShardId:        ShardRegion.ExtractShardId,
@@ -395,7 +485,6 @@ private[akka] class PersistentShard(
   typeName, shardId, entityProps, settings, extractEntityId, extractShardId, handOffStopMessage)
   with RememberingShard with PersistentActor with ActorLogging {
 
-  import ShardRegion.{ EntityId, Msg }
   import Shard._
   import settings.tuningParameters._
 
@@ -459,11 +548,11 @@ private[akka] class PersistentShard(
     case DeleteMessagesFailure(reason, toSequenceNr) ⇒
       log.warning("PersistentShard messages to {} deletion failure: {}", toSequenceNr, reason.getMessage)
 
-    case DeleteSnapshotSuccess(m) ⇒
+    case DeleteSnapshotsSuccess(m) ⇒
       log.debug("PersistentShard snapshots matching {} deleted successfully", m)
 
-    case DeleteSnapshotFailure(m, reason) ⇒
-      log.warning("PersistentShard snapshots matching {} deletion falure: {}", m, reason.getMessage)
+    case DeleteSnapshotsFailure(m, reason) ⇒
+      log.warning("PersistentShard snapshots matching {} deletion failure: {}", m, reason.getMessage)
 
   }: Receive).orElse(super.receiveCommand)
 
@@ -481,7 +570,7 @@ private[akka] class PersistentShard(
 private[akka] class DDataShard(
   typeName:              String,
   shardId:               ShardRegion.ShardId,
-  entityProps:           Props,
+  entityProps:           String ⇒ Props,
   override val settings: ClusterShardingSettings,
   extractEntityId:       ShardRegion.ExtractEntityId,
   extractShardId:        ShardRegion.ExtractShardId,
@@ -491,7 +580,7 @@ private[akka] class DDataShard(
   typeName, shardId, entityProps, settings, extractEntityId, extractShardId, handOffStopMessage)
   with RememberingShard with Stash with ActorLogging {
 
-  import ShardRegion.{ EntityId, Msg }
+  import ShardRegion.EntityId
   import Shard._
   import settings.tuningParameters._
 

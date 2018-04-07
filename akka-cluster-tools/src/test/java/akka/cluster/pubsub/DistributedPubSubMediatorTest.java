@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
 
 package akka.cluster.pubsub;
@@ -82,7 +82,7 @@ public class DistributedPubSubMediatorTest extends JUnitSuite {
         .match(String.class, msg ->
           log.info("Got: {}", msg))
         .match(DistributedPubSubMediator.SubscribeAck.class, msg ->
-          log.info("subscribing"))
+          log.info("subscribed"))
         .build();
     }
   }
@@ -126,8 +126,6 @@ public class DistributedPubSubMediatorTest extends JUnitSuite {
       return receiveBuilder()
         .match(String.class, msg ->
           log.info("Got: {}", msg))
-        .match(DistributedPubSubMediator.SubscribeAck.class, msg ->
-          log.info("subscribing"))
         .build();
     }
 

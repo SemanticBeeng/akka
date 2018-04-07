@@ -1,6 +1,7 @@
 /**
- * Copyright (C) 2016-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2016-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.remote.artery
 
 import akka.actor._
@@ -91,11 +92,11 @@ class CodecBenchmark {
     """
     )
     val config = configType match {
-      case RemoteInstrument =>
+      case RemoteInstrument ⇒
         ConfigFactory.parseString(
           s"""akka.remote.artery.advanced.instruments = [ "${classOf[DummyRemoteInstrument].getName}" ]"""
         ).withFallback(commonConfig)
-      case _ =>
+      case _ ⇒
         commonConfig
     }
 
@@ -127,7 +128,7 @@ class CodecBenchmark {
     } else null
     val envelope = new EnvelopeBuffer(envelopeTemplateBuffer)
     val outboundEnvelope = OutboundEnvelope(OptionVal.None, payload, OptionVal.None)
-    headerIn setVersion 1
+    headerIn setVersion ArteryTransport.HighestVersion
     headerIn setUid 42
     headerIn setSenderActorRef actorOnSystemA
     headerIn setRecipientActorRef remoteRefB
@@ -138,17 +139,18 @@ class CodecBenchmark {
 
     // Now build up the graphs
     val encoder: Flow[OutboundEnvelope, EnvelopeBuffer, Encoder.OutboundCompressionAccess] =
-      Flow.fromGraph(new Encoder(uniqueLocalAddress, system.asInstanceOf[ExtendedActorSystem], outboundEnvelopePool, envelopePool, false))
+      Flow.fromGraph(new Encoder(uniqueLocalAddress, system.asInstanceOf[ExtendedActorSystem], outboundEnvelopePool,
+        envelopePool, streamId = 1, debugLogSend = false, version = ArteryTransport.HighestVersion))
     val encoderInput: Flow[String, OutboundEnvelope, NotUsed] =
       Flow[String].map(msg ⇒ outboundEnvelopePool.acquire().init(OptionVal.None, payload, OptionVal.Some(remoteRefB)))
     val compressions = new InboundCompressionsImpl(system, inboundContext, inboundContext.settings.Advanced.Compression)
     val decoder: Flow[EnvelopeBuffer, InboundEnvelope, InboundCompressionAccess] =
       Flow.fromGraph(new Decoder(inboundContext, system.asInstanceOf[ExtendedActorSystem],
-        uniqueLocalAddress, inboundContext.settings, envelopePool, compressions, inboundEnvelopePool))
+        uniqueLocalAddress, inboundContext.settings, compressions, inboundEnvelopePool))
     val deserializer: Flow[InboundEnvelope, InboundEnvelope, NotUsed] =
       Flow.fromGraph(new Deserializer(inboundContext, system.asInstanceOf[ExtendedActorSystem], envelopePool))
     val decoderInput: Flow[String, EnvelopeBuffer, NotUsed] = Flow[String]
-      .map { _ =>
+      .map { _ ⇒
         val envelope = envelopePool.acquire()
         envelopeTemplateBuffer.rewind()
         envelope.byteBuffer.put(envelopeTemplateBuffer)
@@ -158,14 +160,14 @@ class CodecBenchmark {
 
     encodeGraph = encoderInput
       .via(encoder)
-      .map(envelope => envelopePool.release(envelope))
+      .map(envelope ⇒ envelopePool.release(envelope))
 
     decodeGraph = decoderInput
       .via(decoder)
       .via(deserializer)
       .map {
-        case env: ReusableInboundEnvelope => inboundEnvelopePool.release(env)
-        case _ =>
+        case env: ReusableInboundEnvelope ⇒ inboundEnvelopePool.release(env)
+        case _                            ⇒
       }
 
     encodeDecodeGraph = encoderInput
@@ -173,8 +175,8 @@ class CodecBenchmark {
       .via(decoder)
       .via(deserializer)
       .map {
-        case env: ReusableInboundEnvelope => inboundEnvelopePool.release(env)
-        case _ =>
+        case env: ReusableInboundEnvelope ⇒ inboundEnvelopePool.release(env)
+        case _                            ⇒
       }
   }
 

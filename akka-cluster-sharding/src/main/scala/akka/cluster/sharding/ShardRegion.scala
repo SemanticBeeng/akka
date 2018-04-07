@@ -1,12 +1,13 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.cluster.sharding
 
 import java.net.URLEncoder
-import akka.pattern.AskTimeoutException
-import akka.util.Timeout
 
+import akka.pattern.AskTimeoutException
+import akka.util.{ MessageBufferMap, Timeout }
 import akka.pattern.{ ask, pipe }
 import akka.actor._
 import akka.cluster.Cluster
@@ -20,19 +21,20 @@ import scala.concurrent.Future
 import scala.reflect.ClassTag
 import scala.concurrent.Promise
 import akka.Done
+import akka.cluster.ClusterSettings
+import akka.cluster.ClusterSettings.DataCenter
 
 /**
  * @see [[ClusterSharding$ ClusterSharding extension]]
  */
 object ShardRegion {
-
   /**
    * INTERNAL API
    * Factory method for the [[akka.actor.Props]] of the [[ShardRegion]] actor.
    */
   private[akka] def props(
     typeName:           String,
-    entityProps:        Props,
+    entityProps:        String ⇒ Props,
     settings:           ClusterShardingSettings,
     coordinatorPath:    String,
     extractEntityId:    ShardRegion.ExtractEntityId,
@@ -40,7 +42,7 @@ object ShardRegion {
     handOffStopMessage: Any,
     replicator:         ActorRef,
     majorityMinCap:     Int): Props =
-    Props(new ShardRegion(typeName, Some(entityProps), settings, coordinatorPath, extractEntityId,
+    Props(new ShardRegion(typeName, Some(entityProps), dataCenter = None, settings, coordinatorPath, extractEntityId,
       extractShardId, handOffStopMessage, replicator, majorityMinCap)).withDeploy(Deploy.local)
 
   /**
@@ -50,13 +52,14 @@ object ShardRegion {
    */
   private[akka] def proxyProps(
     typeName:        String,
+    dataCenter:      Option[DataCenter],
     settings:        ClusterShardingSettings,
     coordinatorPath: String,
     extractEntityId: ShardRegion.ExtractEntityId,
     extractShardId:  ShardRegion.ExtractShardId,
     replicator:      ActorRef,
     majorityMinCap:  Int): Props =
-    Props(new ShardRegion(typeName, None, settings, coordinatorPath, extractEntityId, extractShardId,
+    Props(new ShardRegion(typeName, None, dataCenter, settings, coordinatorPath, extractEntityId, extractShardId,
       PoisonPill, replicator, majorityMinCap)).withDeploy(Deploy.local)
 
   /**
@@ -109,7 +112,7 @@ object ShardRegion {
      */
     def entityMessage(message: Any): Any
     /**
-     * Extract the entity id from an incoming `message`. Only messages that passed the [[#entityId]]
+     * Extract the shard id from an incoming `message`. Only messages that passed the [[#entityId]]
      * function will be used as input to this function.
      */
     def shardId(message: Any): String
@@ -126,8 +129,13 @@ object ShardRegion {
      */
     override def entityMessage(message: Any): Any = message
 
-    override def shardId(message: Any): String =
-      (math.abs(entityId(message).hashCode) % maxNumberOfShards).toString
+    override def shardId(message: Any): String = {
+      val id = message match {
+        case ShardRegion.StartEntity(id) ⇒ id
+        case _                           ⇒ entityId(message)
+      }
+      (math.abs(id.hashCode) % maxNumberOfShards).toString
+    }
   }
 
   sealed trait ShardRegionCommand
@@ -302,6 +310,19 @@ object ShardRegion {
    */
   private final case class RestartShard(shardId: ShardId)
 
+  /**
+   * When remembering entities and a shard is started, each entity id that needs to
+   * be running will trigger this message being sent through sharding. For this to work
+   * the message *must* be handled by the shard id extractor.
+   */
+  final case class StartEntity(entityId: EntityId) extends ClusterShardingSerializable
+
+  /**
+   * Sent back when a `ShardRegion.StartEntity` message was received and triggered the entity
+   * to start (it does not guarantee the entity successfully started)
+   */
+  final case class StartEntityAck(entityId: EntityId, shardId: ShardRegion.ShardId) extends ClusterShardingSerializable
+
   private def roleOption(role: String): Option[String] =
     if (role == "") None else Option(role)
 
@@ -346,7 +367,8 @@ object ShardRegion {
  */
 private[akka] class ShardRegion(
   typeName:           String,
-  entityProps:        Option[Props],
+  entityProps:        Option[String ⇒ Props],
+  dataCenter:         Option[DataCenter],
   settings:           ClusterShardingSettings,
   coordinatorPath:    String,
   extractEntityId:    ShardRegion.ExtractEntityId,
@@ -368,15 +390,13 @@ private[akka] class ShardRegion(
 
   var regions = Map.empty[ActorRef, Set[ShardId]]
   var regionByShard = Map.empty[ShardId, ActorRef]
-  var shardBuffers = Map.empty[ShardId, Vector[(Msg, ActorRef)]]
+  var shardBuffers = new MessageBufferMap[ShardId]
   var loggedFullBufferWarning = false
   var shards = Map.empty[ShardId, ActorRef]
   var shardsByRef = Map.empty[ActorRef, ShardId]
   var startingShards = Set.empty[ShardId]
   var handingOff = Set.empty[ActorRef]
   var gracefulShutdownInProgress = false
-
-  def totalBufferSize = shardBuffers.foldLeft(0) { (sum, entity) ⇒ sum + entity._2.size }
 
   import context.dispatcher
   val retryTask = context.system.scheduler.schedule(retryInterval, retryInterval, self, Retry)
@@ -387,8 +407,12 @@ private[akka] class ShardRegion(
   CoordinatedShutdown(context.system).addTask(
     CoordinatedShutdown.PhaseClusterShardingShutdownRegion,
     "region-shutdown") { () ⇒
-      self ! GracefulShutdown
-      gracefulShutdownProgress.future
+      if (cluster.isTerminated || cluster.selfMember.status == MemberStatus.Down) {
+        Future.successful(Done)
+      } else {
+        self ! GracefulShutdown
+        gracefulShutdownProgress.future
+      }
     }
 
   // subscribe to MemberEvent, re-subscribe when restart
@@ -403,10 +427,14 @@ private[akka] class ShardRegion(
     retryTask.cancel()
   }
 
-  def matchingRole(member: Member): Boolean = role match {
-    case None    ⇒ true
-    case Some(r) ⇒ member.hasRole(r)
+  // when using proxy the data center can be different from the own data center
+  private val targetDcRole = dataCenter match {
+    case Some(t) ⇒ ClusterSettings.DcRolePrefix + t
+    case None    ⇒ ClusterSettings.DcRolePrefix + cluster.settings.SelfDataCenter
   }
+
+  def matchingRole(member: Member): Boolean =
+    member.hasRole(targetDcRole) && role.forall(member.hasRole)
 
   def coordinatorSelection: Option[ActorSelection] =
     membersByAge.headOption.map(m ⇒ context.actorSelection(RootActorPath(m.address) + coordinatorPath))
@@ -442,6 +470,7 @@ private[akka] class ShardRegion(
     case cmd: ShardRegionCommand                 ⇒ receiveCommand(cmd)
     case query: ShardRegionQuery                 ⇒ receiveQuery(query)
     case msg: RestartShard                       ⇒ deliverMessage(msg, sender())
+    case msg: StartEntity                        ⇒ deliverStartEntity(msg, sender())
     case msg if extractEntityId.isDefinedAt(msg) ⇒ deliverMessage(msg, sender())
     case unknownMsg                              ⇒ log.warning("Message does not have an extractor defined in shard [{}] so it was ignored: {}", typeName, unknownMsg)
   }
@@ -454,13 +483,22 @@ private[akka] class ShardRegion(
   def receiveClusterEvent(evt: ClusterDomainEvent): Unit = evt match {
     case MemberUp(m) ⇒
       if (matchingRole(m))
-        changeMembers(membersByAge - m + m) // replace
+        changeMembers {
+          // replace, it's possible that the upNumber is changed
+          membersByAge = membersByAge.filterNot(_.uniqueAddress == m.uniqueAddress)
+          membersByAge += m
+          membersByAge
+        }
 
     case MemberRemoved(m, _) ⇒
       if (m.uniqueAddress == cluster.selfUniqueAddress)
         context.stop(self)
       else if (matchingRole(m))
-        changeMembers(membersByAge - m)
+        changeMembers {
+          // filter, it's possible that the upNumber is changed
+          membersByAge = membersByAge.filterNot(_.uniqueAddress == m.uniqueAddress)
+          membersByAge
+        }
 
     case _: MemberEvent ⇒ // these are expected, no need to warn about them
 
@@ -520,7 +558,7 @@ private[akka] class ShardRegion(
       // because they might be forwarded from other regions and there
       // is a risk or message re-ordering otherwise
       if (shardBuffers.contains(shard)) {
-        shardBuffers -= shard
+        shardBuffers.remove(shard)
         loggedFullBufferWarning = false
       }
 
@@ -641,7 +679,7 @@ private[akka] class ShardRegion(
     if (shardBuffers.nonEmpty && retryCount >= 5)
       log.warning(
         "Trying to register to coordinator at [{}], but no acknowledgement. Total [{}] buffered messages.",
-        coordinatorSelection, totalBufferSize)
+        coordinatorSelection, shardBuffers.totalSize)
   }
 
   def registrationMessage: Any =
@@ -668,7 +706,7 @@ private[akka] class ShardRegion(
   }
 
   def bufferMessage(shardId: ShardId, msg: Any, snd: ActorRef) = {
-    val totBufSize = totalBufferSize
+    val totBufSize = shardBuffers.totalSize
     if (totBufSize >= bufferSize) {
       if (loggedFullBufferWarning)
         log.debug("Buffer is full, dropping message for shard [{}]", shardId)
@@ -678,8 +716,7 @@ private[akka] class ShardRegion(
       }
       context.system.deadLetters ! msg
     } else {
-      val buf = shardBuffers.getOrElse(shardId, Vector.empty)
-      shardBuffers = shardBuffers.updated(shardId, buf :+ ((msg, snd)))
+      shardBuffers.append(shardId, msg, snd)
 
       // log some insight to how buffers are filled up every 10% of the buffer capacity
       val tot = totBufSize + 1
@@ -694,15 +731,23 @@ private[akka] class ShardRegion(
   }
 
   def deliverBufferedMessages(shardId: ShardId, receiver: ActorRef): Unit = {
-    shardBuffers.get(shardId) match {
-      case Some(buf) ⇒
-        log.debug("Deliver [{}] buffered messages for shard [{}]", buf.size, shardId)
-        buf.foreach { case (msg, snd) ⇒ receiver.tell(msg, snd) }
-        shardBuffers -= shardId
-      case None ⇒
+    if (shardBuffers.contains(shardId)) {
+      val buf = shardBuffers.getOrEmpty(shardId)
+      log.debug("Deliver [{}] buffered messages for shard [{}]", buf.size, shardId)
+      buf.foreach { case (msg, snd) ⇒ receiver.tell(msg, snd) }
+      shardBuffers.remove(shardId)
     }
     loggedFullBufferWarning = false
     retryCount = 0
+  }
+
+  def deliverStartEntity(msg: StartEntity, snd: ActorRef): Unit = {
+    try {
+      deliverMessage(msg, snd)
+    } catch {
+      case ex: MatchError ⇒
+        log.error(ex, "When using remember-entities the shard id extractor must handle ShardRegion.StartEntity(id).")
+    }
   }
 
   def deliverMessage(msg: Any, snd: ActorRef): Unit =
@@ -717,9 +762,9 @@ private[akka] class ShardRegion(
               log.debug("Request shard [{}] home", shardId)
               coordinator.foreach(_ ! GetShardHome(shardId))
             }
-            val buf = shardBuffers.getOrElse(shardId, Vector.empty)
+            val buf = shardBuffers.getOrEmpty(shardId)
             log.debug("Buffer message for shard [{}]. Total [{}] buffered messages.", shardId, buf.size + 1)
-            shardBuffers = shardBuffers.updated(shardId, buf :+ ((msg, snd)))
+            shardBuffers.append(shardId, msg, snd)
         }
 
       case _ ⇒
@@ -728,14 +773,11 @@ private[akka] class ShardRegion(
           case Some(ref) if ref == self ⇒
             getShard(shardId) match {
               case Some(shard) ⇒
-                shardBuffers.get(shardId) match {
-                  case Some(buf) ⇒
-                    // Since now messages to a shard is buffered then those messages must be in right order
-                    bufferMessage(shardId, msg, snd)
-                    deliverBufferedMessages(shardId, shard)
-                  case None ⇒
-                    shard.tell(msg, snd)
-                }
+                if (shardBuffers.contains(shardId)) {
+                  // Since now messages to a shard is buffered then those messages must be in right order
+                  bufferMessage(shardId, msg, snd)
+                  deliverBufferedMessages(shardId, shard)
+                } else shard.tell(msg, snd)
               case None ⇒ bufferMessage(shardId, msg, snd)
             }
           case Some(ref) ⇒

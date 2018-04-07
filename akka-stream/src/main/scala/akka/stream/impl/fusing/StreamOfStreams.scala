@@ -1,10 +1,13 @@
 /**
- * Copyright (C) 2015-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2015-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.stream.impl.fusing
 
 import java.util.concurrent.atomic.AtomicReference
+
 import akka.NotUsed
+import akka.annotation.InternalApi
 import akka.stream.ActorAttributes.SupervisionStrategy
 import akka.stream._
 import akka.stream.impl.Stages.DefaultAttributes
@@ -12,19 +15,19 @@ import akka.stream.impl.SubscriptionTimeoutException
 import akka.stream.stage._
 import akka.stream.scaladsl._
 import akka.stream.actor.ActorSubscriberMessage
-import scala.collection.{ mutable, immutable }
+
+import scala.collection.immutable
 import scala.concurrent.duration.FiniteDuration
 import scala.util.control.NonFatal
 import scala.annotation.tailrec
-import akka.stream.impl.PublisherSource
-import akka.stream.impl.CancellingSubscriber
 import akka.stream.impl.{ Buffer ⇒ BufferImpl }
-import scala.collection.JavaConversions._
+
+import scala.collection.JavaConverters._
 
 /**
  * INTERNAL API
  */
-final class FlattenMerge[T, M](val breadth: Int) extends GraphStage[FlowShape[Graph[SourceShape[T], M], T]] {
+@InternalApi private[akka] final class FlattenMerge[T, M](val breadth: Int) extends GraphStage[FlowShape[Graph[SourceShape[T], M], T]] {
   private val in = Inlet[Graph[SourceShape[T], M]]("flatten.in")
   private val out = Outlet[T]("flatten.out")
 
@@ -83,7 +86,7 @@ final class FlattenMerge[T, M](val breadth: Int) extends GraphStage[FlowShape[Gr
       sinkIn.pull()
       sources += sinkIn
       val graph = Source.fromGraph(source).to(sinkIn.sink)
-      interpreter.subFusingMaterializer.materialize(graph, initialAttributes = enclosingAttributes)
+      interpreter.subFusingMaterializer.materialize(graph, defaultAttributes = enclosingAttributes)
     }
 
     def removeSource(src: SubSinkInlet[T]): Unit = {
@@ -103,7 +106,7 @@ final class FlattenMerge[T, M](val breadth: Int) extends GraphStage[FlowShape[Gr
 /**
  * INTERNAL API
  */
-final class PrefixAndTail[T](val n: Int) extends GraphStage[FlowShape[T, (immutable.Seq[T], Source[T, NotUsed])]] {
+@InternalApi private[akka] final class PrefixAndTail[T](val n: Int) extends GraphStage[FlowShape[T, (immutable.Seq[T], Source[T, NotUsed])]] {
   val in: Inlet[T] = Inlet("PrefixAndTail.in")
   val out: Outlet[(immutable.Seq[T], Source[T, NotUsed])] = Outlet("PrefixAndTail.out")
   override val shape: FlowShape[T, (immutable.Seq[T], Source[T, NotUsed])] = FlowShape(in, out)
@@ -211,7 +214,7 @@ final class PrefixAndTail[T](val n: Int) extends GraphStage[FlowShape[T, (immuta
 /**
  * INTERNAL API
  */
-final class GroupBy[T, K](val maxSubstreams: Int, val keyFor: T ⇒ K) extends GraphStage[FlowShape[T, Source[T, NotUsed]]] {
+@InternalApi private[akka] final class GroupBy[T, K](val maxSubstreams: Int, val keyFor: T ⇒ K) extends GraphStage[FlowShape[T, Source[T, NotUsed]]] {
   val in: Inlet[T] = Inlet("GroupBy.in")
   val out: Outlet[Source[T, NotUsed]] = Outlet("GroupBy.out")
   override val shape: FlowShape[T, Source[T, NotUsed]] = FlowShape(in, out)
@@ -219,7 +222,7 @@ final class GroupBy[T, K](val maxSubstreams: Int, val keyFor: T ⇒ K) extends G
 
   override def createLogic(inheritedAttributes: Attributes): GraphStageLogic = new TimerGraphStageLogic(shape) with OutHandler with InHandler {
     parent ⇒
-    lazy val decider = inheritedAttributes.get[SupervisionStrategy].map(_.decider).getOrElse(Supervision.stoppingDecider)
+    lazy val decider = inheritedAttributes.mandatoryAttribute[SupervisionStrategy].decider
     private val activeSubstreamsMap = new java.util.HashMap[Any, SubstreamSource]()
     private val closedSubstreams = new java.util.HashSet[Any]()
     private var timeout: FiniteDuration = _
@@ -241,17 +244,25 @@ final class GroupBy[T, K](val maxSubstreams: Int, val keyFor: T ⇒ K) extends G
 
     private def tryCompleteAll(): Boolean =
       if (activeSubstreamsMap.isEmpty || (!hasNextElement && firstPushCounter == 0)) {
-        for (value ← activeSubstreamsMap.values()) value.complete()
+        for (value ← activeSubstreamsMap.values().asScala) value.complete()
+        completeStage()
+        true
+      } else false
+
+    private def tryCancel(): Boolean =
+      // if there's no active substreams or there's only one but it's not been pushed yet
+      if (activeSubstreamsMap.isEmpty || (activeSubstreamsMap.size == substreamWaitingToBePushed.size)) {
         completeStage()
         true
       } else false
 
     private def fail(ex: Throwable): Unit = {
-      for (value ← activeSubstreamsMap.values()) value.fail(ex)
+      for (value ← activeSubstreamsMap.values().asScala) value.fail(ex)
       failStage(ex)
     }
 
-    private def needToPull: Boolean = !(hasBeenPulled(in) || isClosed(in) || hasNextElement)
+    private def needToPull: Boolean =
+      !(hasBeenPulled(in) || isClosed(in) || hasNextElement || substreamWaitingToBePushed.nonEmpty)
 
     override def preStart(): Unit =
       timeout = ActorMaterializerHelper.downcast(interpreter.materializer).settings.subscriptionTimeoutSettings.timeout
@@ -275,8 +286,9 @@ final class GroupBy[T, K](val maxSubstreams: Int, val keyFor: T ⇒ K) extends G
 
     override def onUpstreamFailure(ex: Throwable): Unit = fail(ex)
 
-    override def onDownstreamFinish(): Unit =
-      if (activeSubstreamsMap.isEmpty) completeStage() else setKeepGoing(true)
+    override def onUpstreamFinish(): Unit = if (!tryCompleteAll()) setKeepGoing(true)
+
+    override def onDownstreamFinish(): Unit = if (!tryCancel()) setKeepGoing(true)
 
     override def onPush(): Unit = try {
       val elem = grab(in)
@@ -302,10 +314,6 @@ final class GroupBy[T, K](val maxSubstreams: Int, val keyFor: T ⇒ K) extends G
           case Supervision.Stop                         ⇒ fail(ex)
           case Supervision.Resume | Supervision.Restart ⇒ if (!hasBeenPulled(in)) pull(in)
         }
-    }
-
-    override def onUpstreamFinish(): Unit = {
-      if (!tryCompleteAll()) setKeepGoing(true)
     }
 
     private def runSubstream(key: K, value: T): Unit = {
@@ -371,6 +379,7 @@ final class GroupBy[T, K](val maxSubstreams: Int, val keyFor: T ⇒ K) extends G
         if (hasNextElement && nextElementKey == key) clearNextElement()
         if (firstPush()) firstPushCounter -= 1
         completeSubStream()
+        if (parent.isClosed(out)) tryCancel()
         if (parent.isClosed(in)) tryCompleteAll() else if (needToPull) pull(in)
       }
 
@@ -384,7 +393,7 @@ final class GroupBy[T, K](val maxSubstreams: Int, val keyFor: T ⇒ K) extends G
 /**
  * INTERNAL API
  */
-object Split {
+@InternalApi private[akka] object Split {
   sealed abstract class SplitDecision
 
   /** Splits before the current element. The current element will be the first element in the new substream. */
@@ -403,7 +412,7 @@ object Split {
 /**
  * INTERNAL API
  */
-final class Split[T](val decision: Split.SplitDecision, val p: T ⇒ Boolean, val substreamCancelStrategy: SubstreamCancelStrategy) extends GraphStage[FlowShape[T, Source[T, NotUsed]]] {
+@InternalApi private[akka] final class Split[T](val decision: Split.SplitDecision, val p: T ⇒ Boolean, val substreamCancelStrategy: SubstreamCancelStrategy) extends GraphStage[FlowShape[T, Source[T, NotUsed]]] {
   val in: Inlet[T] = Inlet("Split.in")
   val out: Outlet[Source[T, NotUsed]] = Outlet("Split.out")
   override val shape: FlowShape[T, Source[T, NotUsed]] = FlowShape(in, out)
@@ -572,7 +581,24 @@ final class Split[T](val decision: Split.SplitDecision, val p: T ⇒ Boolean, va
 /**
  * INTERNAL API
  */
-object SubSink {
+@InternalApi private[stream] object SubSink {
+  sealed trait State
+  /** Not yet materialized and no command has been scheduled */
+  case object Uninitialized extends State
+
+  /** A command was scheduled before materialization */
+  sealed abstract class CommandScheduledBeforeMaterialization(val command: Command) extends State
+
+  // preallocated instances for both commands
+  /** A RequestOne command was scheduled before materialization */
+  case object RequestOneScheduledBeforeMaterialization extends CommandScheduledBeforeMaterialization(RequestOne)
+  /** A Cancel command was scheduled before materialization */
+  case object CancelScheduledBeforeMaterialization extends CommandScheduledBeforeMaterialization(Cancel)
+
+  /** Steady state: sink has been materialized, commands can be delivered through the callback */
+  // Represented in unwrapped form as AsyncCallback[Command] directly to prevent a level of indirection
+  // case class Materialized(callback: AsyncCallback[Command]) extends State
+
   sealed trait Command
   case object RequestOne extends Command
   case object Cancel extends Command
@@ -581,32 +607,36 @@ object SubSink {
 /**
  * INTERNAL API
  */
-final class SubSink[T](name: String, externalCallback: ActorSubscriberMessage ⇒ Unit)
+@InternalApi private[stream] final class SubSink[T](name: String, externalCallback: ActorSubscriberMessage ⇒ Unit)
   extends GraphStage[SinkShape[T]] {
   import SubSink._
 
-  private val in = Inlet[T]("SubSink.in")
+  private val in = Inlet[T](s"SubSink($name).in")
 
   override def initialAttributes = Attributes.name(s"SubSink($name)")
   override val shape = SinkShape(in)
 
-  private val status = new AtomicReference[AnyRef]
+  private val status = new AtomicReference[ /* State */ AnyRef](Uninitialized)
 
-  def pullSubstream(): Unit = {
+  def pullSubstream(): Unit = dispatchCommand(RequestOneScheduledBeforeMaterialization)
+  def cancelSubstream(): Unit = dispatchCommand(CancelScheduledBeforeMaterialization)
+
+  @tailrec
+  private def dispatchCommand(newState: CommandScheduledBeforeMaterialization): Unit =
     status.get match {
-      case f: AsyncCallback[Any] @unchecked ⇒ f.invoke(RequestOne)
-      case null ⇒
-        if (!status.compareAndSet(null, RequestOne))
-          status.get.asInstanceOf[Command ⇒ Unit](RequestOne)
-    }
-  }
+      case /* Materialized */ callback: AsyncCallback[Command @unchecked] ⇒ callback.invoke(newState.command)
+      case Uninitialized ⇒
+        if (!status.compareAndSet(Uninitialized, newState))
+          dispatchCommand(newState) // changed to materialized in the meantime
 
-  def cancelSubstream(): Unit = status.get match {
-    case f: AsyncCallback[Any] @unchecked ⇒ f.invoke(Cancel)
-    case x ⇒ // a potential RequestOne is overwritten
-      if (!status.compareAndSet(x, Cancel))
-        status.get.asInstanceOf[Command ⇒ Unit](Cancel)
-  }
+      case RequestOneScheduledBeforeMaterialization if newState == CancelScheduledBeforeMaterialization ⇒
+        // cancellation is allowed to replace pull
+        if (!status.compareAndSet(RequestOneScheduledBeforeMaterialization, newState))
+          dispatchCommand(RequestOneScheduledBeforeMaterialization)
+
+      case cmd: CommandScheduledBeforeMaterialization ⇒
+        throw new IllegalStateException(s"${newState.command} on subsink is illegal when ${cmd.command} is still pending")
+    }
 
   override def createLogic(attr: Attributes) = new GraphStageLogic(shape) with InHandler {
     setHandler(in, this)
@@ -615,65 +645,43 @@ final class SubSink[T](name: String, externalCallback: ActorSubscriberMessage �
     override def onUpstreamFinish(): Unit = externalCallback(ActorSubscriberMessage.OnComplete)
     override def onUpstreamFailure(ex: Throwable): Unit = externalCallback(ActorSubscriberMessage.OnError(ex))
 
-    @tailrec private def setCB(cb: AsyncCallback[Command]): Unit = {
+    @tailrec
+    private def setCallback(callback: Command ⇒ Unit): Unit =
       status.get match {
-        case null ⇒
-          if (!status.compareAndSet(null, cb)) setCB(cb)
-        case RequestOne ⇒
-          pull(in)
-          if (!status.compareAndSet(RequestOne, cb)) setCB(cb)
-        case Cancel ⇒
-          completeStage()
-          if (!status.compareAndSet(Cancel, cb)) setCB(cb)
-        case _: AsyncCallback[_] ⇒
+        case Uninitialized ⇒
+          if (!status.compareAndSet(Uninitialized, /* Materialized */ getAsyncCallback[Command](callback)))
+            setCallback(callback)
+
+        case cmd: CommandScheduledBeforeMaterialization ⇒
+          if (status.compareAndSet(cmd, /* Materialized */ getAsyncCallback[Command](callback)))
+            // between those two lines a new command might have been scheduled, but that will go through the
+            // async interface, so that the ordering is still kept
+            callback(cmd.command)
+          else
+            setCallback(callback)
+
+        case m: /* Materialized */ AsyncCallback[Command @unchecked] ⇒
           failStage(new IllegalStateException("Substream Source cannot be materialized more than once"))
       }
-    }
 
-    override def preStart(): Unit = {
-      val ourOwnCallback = getAsyncCallback[Command] {
+    override def preStart(): Unit =
+      setCallback {
         case RequestOne ⇒ tryPull(in)
         case Cancel     ⇒ completeStage()
-        case _          ⇒ throw new IllegalStateException("Bug")
       }
-      setCB(ourOwnCallback)
-    }
   }
 
   override def toString: String = name
 }
 
-object SubSource {
-  /**
-   * INTERNAL API
-   *
-   * HERE ACTUALLY ARE DRAGONS, YOU HAVE BEEN WARNED!
-   *
-   * FIXME #19240
-   */
-  private[akka] def kill[T, M](s: Source[T, M]): Unit = {
-    s.module match {
-      case GraphStageModule(_, _, stage: SubSource[_]) ⇒
-        stage.externalCallback.invoke(SubSink.Cancel)
-      case pub: PublisherSource[_] ⇒
-        pub.create(null)._1.subscribe(new CancellingSubscriber)
-      case m ⇒
-        GraphInterpreter.currentInterpreterOrNull match {
-          case null ⇒ throw new UnsupportedOperationException(s"cannot drop Source of type ${m.getClass.getName}")
-          case intp ⇒ s.runWith(Sink.ignore)(intp.subFusingMaterializer)
-        }
-    }
-  }
-}
-
 /**
  * INTERNAL API
  */
-final class SubSource[T](name: String, private[fusing] val externalCallback: AsyncCallback[SubSink.Command])
+@InternalApi private[akka] final class SubSource[T](name: String, private[fusing] val externalCallback: AsyncCallback[SubSink.Command])
   extends GraphStage[SourceShape[T]] {
   import SubSink._
 
-  val out: Outlet[T] = Outlet("SubSource.out")
+  val out: Outlet[T] = Outlet(s"SubSource($name).out")
   override def initialAttributes = Attributes.name(s"SubSource($name)")
   override val shape: SourceShape[T] = SourceShape(out)
 

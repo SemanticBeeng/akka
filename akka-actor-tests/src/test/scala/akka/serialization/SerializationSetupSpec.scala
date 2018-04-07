@@ -1,13 +1,16 @@
 /*
- * Copyright (C) 2016-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2016-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.serialization
 
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.{ BitSet ⇒ ProgrammaticJavaDummy }
+import java.util.{ Date ⇒ SerializableDummy }
 
 import akka.actor.setup.ActorSystemSetup
-import akka.actor.{ ActorSystem, BootstrapSetup, ExtendedActorSystem, Terminated }
+import akka.actor.{ ActorSystem, BootstrapSetup, ExtendedActorSystem }
 import akka.testkit.{ AkkaSpec, TestKit, TestProbe }
 import com.typesafe.config.ConfigFactory
 
@@ -15,8 +18,6 @@ import scala.concurrent.duration._
 
 class ConfigurationDummy
 class ProgrammaticDummy
-case class ProgrammaticJavaDummy()
-case class SerializableDummy() // since case classes are serializable
 
 /**
  * Keeps a registry of each object "serialized", returns an identifier, for every "deserialization" the original object
@@ -57,6 +58,9 @@ object SerializationSetupSpec {
       actor {
         serialize-messages = off
 
+        # this is by default on, but tests are running with off, use defaults here
+        warn-about-java-serializer-usage = on
+
         serialization-bindings {
           "akka.serialization.ConfigurationDummy" = test
         }
@@ -70,6 +74,8 @@ object SerializationSetupSpec {
     akka {
       actor {
         allow-java-serialization = off
+        # this is by default on, but tests are running with off, use defaults here
+        warn-about-java-serializer-usage = on
       }
     }
     """.stripMargin))
@@ -94,6 +100,21 @@ class SerializationSetupSpec extends AkkaSpec(
       serializer shouldBe theSameInstanceAs(programmaticDummySerializer)
     }
 
+    "fail during ActorSystem creation when misconfigured" in {
+      val config =
+        ConfigFactory.parseString(
+          """
+             akka.loglevel = OFF
+             akka.stdout-loglevel = OFF
+             akka.actor.serializers.doe = "john.is.not.here"
+          """).withFallback(ConfigFactory.load())
+
+      a[ClassNotFoundException] should be thrownBy {
+        val system = ActorSystem("SerializationSetupSpec-FailingSystem", config)
+        system.terminate()
+      }
+    }
+
   }
 
   // This is a weird edge case, someone creating a JavaSerializer manually and using it in a system means
@@ -107,9 +128,11 @@ class SerializationSetupSpec extends AkkaSpec(
   }
   val addedJavaSerializationProgramaticallyButDisabledSettings = BootstrapSetup(None, Some(ConfigFactory.parseString("""
     akka {
-    loglevel = debug
+      loglevel = debug
       actor {
         allow-java-serialization = off
+        # this is by default on, but tests are running with off, use defaults here
+        warn-about-java-serializer-usage = on
       }
     }
     """)), None)
@@ -147,7 +170,7 @@ class SerializationSetupSpec extends AkkaSpec(
 
     "disable java serialization also for incoming messages if serializer id usually would have found the serializer" in {
       val ser1 = SerializationExtension(system)
-      val msg = SerializableDummy()
+      val msg = new SerializableDummy
       val bytes = ser1.serialize(msg).get
       val serId = ser1.findSerializerFor(msg).identifier
       ser1.findSerializerFor(msg).includeManifest should ===(false)

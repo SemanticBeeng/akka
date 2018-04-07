@@ -1,6 +1,7 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.stream.scaladsl
 
 import java.util
@@ -9,7 +10,6 @@ import akka.NotUsed
 import akka.actor.ActorSystem
 import akka.stream.Attributes._
 import akka.stream.impl.SinkModule
-import akka.stream.impl.StreamLayout.Module
 import akka.util.ByteString
 
 import scala.annotation.tailrec
@@ -21,12 +21,9 @@ import akka.stream.impl.fusing.GroupBy
 import akka.stream.testkit._
 import akka.stream.testkit.Utils._
 import org.reactivestreams.Publisher
-import org.scalatest.concurrent.ScalaFutures
-import org.scalactic.ConversionCheckedTripleEquals
 import org.scalatest.concurrent.PatienceConfiguration.Timeout
 import akka.stream.testkit.scaladsl.TestSource
 import akka.stream.testkit.scaladsl.TestSink
-
 import java.util.concurrent.ThreadLocalRandom
 
 object FlowGroupBySpec {
@@ -409,6 +406,99 @@ class FlowGroupBySpec extends StreamSpec {
       upstream.sendComplete()
     }
 
+    "work if pull is exercised from multiple substreams while downstream is backpressuring (#24353)" in assertAllStagesStopped {
+      val upstream = TestPublisher.probe[Int]()
+      val downstreamMaster = TestSubscriber.probe[Source[Int, NotUsed]]()
+
+      Source
+        .fromPublisher(upstream)
+        .via(new GroupBy[Int, Int](10, elem ⇒ elem))
+        .runWith(Sink.fromSubscriber(downstreamMaster))
+
+      val substream1 = TestSubscriber.probe[Int]()
+      downstreamMaster.request(1)
+      upstream.sendNext(1)
+      downstreamMaster.expectNext().runWith(Sink.fromSubscriber(substream1))
+
+      val substream2 = TestSubscriber.probe[Int]()
+      downstreamMaster.request(1)
+      upstream.sendNext(2)
+      downstreamMaster.expectNext().runWith(Sink.fromSubscriber(substream2))
+
+      substream1.request(1)
+      substream1.expectNext(1)
+      substream2.request(1)
+      substream2.expectNext(2)
+
+      // Both substreams pull
+      substream1.request(1)
+      substream2.request(1)
+
+      // Upstream sends new groups
+      upstream.sendNext(3)
+      upstream.sendNext(4)
+
+      val substream3 = TestSubscriber.probe[Int]()
+      val substream4 = TestSubscriber.probe[Int]()
+      downstreamMaster.request(1)
+      downstreamMaster.expectNext().runWith(Sink.fromSubscriber(substream3))
+      downstreamMaster.request(1)
+      downstreamMaster.expectNext().runWith(Sink.fromSubscriber(substream4))
+
+      substream3.request(1)
+      substream3.expectNext(3)
+      substream4.request(1)
+      substream4.expectNext(4)
+
+      // Cleanup, not part of the actual test
+      substream1.cancel()
+      substream2.cancel()
+      substream3.cancel()
+      substream4.cancel()
+      downstreamMaster.cancel()
+      upstream.sendComplete()
+    }
+
+    "cancel if downstream has cancelled & all substreams cancel" in assertAllStagesStopped {
+      val upstream = TestPublisher.probe[Int]()
+      val downstreamMaster = TestSubscriber.probe[Source[Int, NotUsed]]()
+
+      Source
+        .fromPublisher(upstream)
+        .via(new GroupBy[Int, Int](10, elem ⇒ elem))
+        .runWith(Sink.fromSubscriber(downstreamMaster))
+
+      val substream1 = TestSubscriber.probe[Int]()
+      downstreamMaster.request(1)
+      upstream.sendNext(1)
+      downstreamMaster.expectNext().runWith(Sink.fromSubscriber(substream1))
+
+      val substream2 = TestSubscriber.probe[Int]()
+      downstreamMaster.request(1)
+      upstream.sendNext(2)
+      downstreamMaster.expectNext().runWith(Sink.fromSubscriber(substream2))
+
+      // Cancel downstream
+      downstreamMaster.cancel()
+
+      // Both substreams still work
+      substream1.request(1)
+      substream1.expectNext(1)
+      substream2.request(1)
+      substream2.expectNext(2)
+
+      // New keys are ignored
+      upstream.sendNext(3)
+      upstream.sendNext(4)
+
+      // Cancel all substreams
+      substream1.cancel()
+      substream2.cancel()
+
+      // Upstream gets cancelled
+      upstream.expectCancellation()
+    }
+
     "work with random demand" in assertAllStagesStopped {
       val mat = ActorMaterializer(ActorMaterializerSettings(system)
         .withInputBuffer(initialSize = 1, maxSize = 1))
@@ -433,7 +523,7 @@ class FlowGroupBySpec extends StreamSpec {
           (probe, probe)
         }
         override protected def newInstance(shape: SinkShape[ByteString]): SinkModule[ByteString, TestSubscriber.Probe[ByteString]] = new ProbeSink(attributes, shape)
-        override def withAttributes(attr: Attributes): Module = new ProbeSink(attr, amendShape(attr))
+        override def withAttributes(attr: Attributes): SinkModule[ByteString, TestSubscriber.Probe[ByteString]] = new ProbeSink(attr, amendShape(attr))
       }
 
       @tailrec
@@ -463,7 +553,7 @@ class FlowGroupBySpec extends StreamSpec {
 
       val publisherProbe = TestPublisher.manualProbe[ByteString]()
       Source.fromPublisher[ByteString](publisherProbe)
-        .groupBy(100, elem ⇒ Math.abs(elem.head % 100)).to(new Sink(new ProbeSink(none, SinkShape(Inlet("ProbeSink.in"))))).run()(mat)
+        .groupBy(100, elem ⇒ Math.abs(elem.head % 100)).to(Sink.fromGraph(new ProbeSink(none, SinkShape(Inlet("ProbeSink.in"))))).run()(mat)
 
       val upstreamSubscription = publisherProbe.expectSubscription()
 

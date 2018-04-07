@@ -1,12 +1,12 @@
 /*
- * Copyright (C) 2016-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2016-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.remote.artery.compress
 
 import java.util.Objects
-import java.util.concurrent.atomic.AtomicReference
 
-import scala.annotation.{ switch, tailrec }
+import scala.annotation.tailrec
 import scala.reflect.ClassTag
 
 /**
@@ -34,14 +34,14 @@ private[remote] final class TopHeavyHitters[T >: Null](val max: Int)(implicit cl
 
   // Contains the hash value for each entry in the hashmap. Used for quicker lookups (equality check can be avoided
   // if hashes don't match)
-  private[this] val hashes: Array[Int] = Array.ofDim(capacity)
+  private[this] val hashes: Array[Int] = new Array(capacity)
   // Actual stored elements in the hashmap
   private[this] val items: Array[T] = Array.ofDim[T](capacity)
   // Index of stored element in the associated heap
   private[this] val heapIndex: Array[Int] = Array.fill(capacity)(-1)
   // Weights associated with an entry in the hashmap. Used to maintain the heap property and give easy access to low
   // weight entries
-  private[this] val weights: Array[Long] = Array.ofDim(capacity)
+  private[this] val weights: Array[Long] = new Array(capacity)
 
   // Heap structure containing indices to slots in the hashmap
   private[this] val heap: Array[Int] = Array.fill(max)(-1)

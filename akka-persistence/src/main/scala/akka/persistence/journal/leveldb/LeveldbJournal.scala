@@ -1,6 +1,7 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.persistence.journal.leveldb
 
 import akka.actor._
@@ -29,7 +30,7 @@ private[persistence] class LeveldbJournal(cfg: Config) extends AsyncWriteJournal
     if (cfg ne LeveldbStore.emptyConfig) cfg
     else context.system.settings.config.getConfig("akka.persistence.journal.leveldb")
 
-  override def receivePluginInternal: Receive = {
+  override def receivePluginInternal: Receive = receiveCompactionInternal orElse {
     case r @ ReplayTaggedMessages(fromSequenceNr, toSequenceNr, max, tag, replyTo) ⇒
       import context.dispatcher
       val readHighestSequenceNrFrom = math.max(0L, fromSequenceNr - 1)

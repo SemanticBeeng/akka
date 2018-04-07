@@ -1,3 +1,7 @@
+/*
+ * Copyright (C) 2018 Lightbend Inc. <https://www.lightbend.com>
+ */
+
 package akka.stream.io
 
 import java.security.KeyStore
@@ -20,11 +24,11 @@ import akka.stream.scaladsl._
 import akka.stream.stage._
 import akka.stream.testkit._
 import akka.stream.testkit.Utils._
-import akka.testkit.EventFilter
 import akka.util.ByteString
 import javax.net.ssl._
 
 import akka.stream.impl.fusing.GraphStages.SimpleLinearGraphStage
+import akka.testkit.WithLogCapturing
 
 object TlsSpec {
 
@@ -82,9 +86,15 @@ object TlsSpec {
     }
   }
 
+  val configOverrides =
+    """
+      akka.loglevel = DEBUG
+      akka.loggers = ["akka.testkit.SilenceAllTestEventListener"]
+      akka.actor.debug.receive=off
+    """
 }
 
-class TlsSpec extends StreamSpec("akka.loglevel=INFO\nakka.actor.debug.receive=off") {
+class TlsSpec extends StreamSpec(TlsSpec.configOverrides) with WithLogCapturing {
   import TlsSpec._
 
   import system.dispatcher
@@ -375,12 +385,6 @@ class TlsSpec extends StreamSpec("akka.loglevel=INFO\nakka.actor.debug.receive=o
         Await.result(f, 8.seconds).utf8String should be(scenario.output.utf8String)
 
         commPattern.cleanup()
-
-        // flush log so as to not mix up logs of different test cases
-        if (log.isDebugEnabled)
-          EventFilter.debug("stopgap", occurrences = 1) intercept {
-            log.debug("stopgap")
-          }
       }
     }
 
@@ -396,15 +400,15 @@ class TlsSpec extends StreamSpec("akka.loglevel=INFO\nakka.actor.debug.receive=o
       // under error conditions, and has the bonus of matching most actual SSL deployments.
       val (server, serverErr) = Tcp()
         .bind("localhost", 0)
-        .map(c ⇒ {
+        .mapAsync(1)(c ⇒
           c.flow.joinMat(serverTls(IgnoreBoth).reversed.joinMat(simple)(Keep.right))(Keep.right).run()
-        })
+        )
         .toMat(Sink.head)(Keep.both).run()
 
       val clientErr = simple.join(badClientTls(IgnoreBoth))
         .join(Tcp().outgoingConnection(Await.result(server, 1.second).localAddress)).run()
 
-      Await.result(serverErr.flatMap(identity), 1.second).getMessage should include("certificate_unknown")
+      Await.result(serverErr, 1.second).getMessage should include("certificate_unknown")
       Await.result(clientErr, 1.second).getMessage should equal("General SSLEngine problem")
     }
 

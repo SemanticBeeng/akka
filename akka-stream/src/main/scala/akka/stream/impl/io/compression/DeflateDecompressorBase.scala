@@ -1,16 +1,18 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.stream.impl.io.compression
 
 import java.util.zip.Inflater
 
+import akka.annotation.InternalApi
 import akka.stream.impl.io.ByteStringParser
 import akka.stream.impl.io.ByteStringParser.{ ParseResult, ParseStep }
 import akka.util.ByteString
 
 /** INTERNAL API */
-private[akka] abstract class DeflateDecompressorBase(maxBytesPerChunk: Int)
+@InternalApi private[akka] abstract class DeflateDecompressorBase(maxBytesPerChunk: Int)
   extends ByteStringParser[ByteString] {
 
   abstract class DecompressorParsingLogic extends ParsingLogic {
@@ -45,4 +47,4 @@ private[akka] abstract class DeflateDecompressorBase(maxBytesPerChunk: Int)
 }
 
 /** INTERNAL API */
-private[akka] object DeflateDecompressorBase
+@InternalApi private[akka] object DeflateDecompressorBase

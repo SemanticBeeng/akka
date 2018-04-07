@@ -1,3 +1,7 @@
+/*
+ * Copyright (C) 2018 Lightbend Inc. <https://www.lightbend.com>
+ */
+
 package akka.contrib.pattern
 
 import akka.actor.Actor
@@ -78,7 +82,7 @@ trait ReceivePipeline extends Actor {
     val zipped = pipeline.foldRight(innerReceiveHandler) { (outerInterceptor, innerHandler) ⇒
       outerInterceptor.andThen {
         case Inner(msg)                ⇒ innerHandler(msg)
-        case InnerAndAfter(msg, after) ⇒ try innerHandler(msg) finally after()
+        case InnerAndAfter(msg, after) ⇒ try innerHandler(msg) finally after(())
         case HandledCompletely         ⇒ Done
       }
     }

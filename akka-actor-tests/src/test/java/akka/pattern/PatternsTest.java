@@ -1,3 +1,7 @@
+/*
+ * Copyright (C) 2018 Lightbend Inc. <https://www.lightbend.com>
+ */
+
 package akka.pattern;
 
 import akka.actor.*;
@@ -16,7 +20,7 @@ import static akka.pattern.Patterns.pipe;
 import static org.junit.Assert.assertEquals;
 
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
 public class PatternsTest extends JUnitSuite {
 

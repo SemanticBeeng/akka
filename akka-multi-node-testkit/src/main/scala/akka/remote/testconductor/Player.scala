@@ -1,6 +1,7 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.remote.testconductor
 
 import java.util.concurrent.TimeoutException
@@ -72,8 +73,6 @@ trait Player { this: TestConductorExt ⇒
    * set in [[akka.remote.testconductor.Conductor]]`.startController()`.
    */
   def startClient(name: RoleName, controllerAddr: InetSocketAddress): Future[Done] = {
-    import ClientFSM._
-    import akka.actor.FSM._
     import Settings.BarrierTimeout
 
     if (_client ne null) throw new IllegalStateException("TestConductorClient already started")
@@ -99,7 +98,7 @@ trait Player { this: TestConductorExt ⇒
       val barrierTimeout = stop.timeLeft
       if (barrierTimeout < Duration.Zero) {
         client ! ToServer(FailBarrier(b))
-        throw new TimeoutException("Server timed out while waiting for barrier " + b);
+        throw new TimeoutException("Server timed out while waiting for barrier " + b)
       }
       try {
         implicit val timeout = Timeout(barrierTimeout + Settings.QueryTimeout.duration)
@@ -226,9 +225,9 @@ private[akka] class ClientFSM(name: RoleName, controllerAddr: InetSocketAddress)
               log.warning("did not expect {}", op)
           }
           stay using d.copy(runningOp = None)
-        case AddressReply(node, addr) ⇒
+        case AddressReply(node, address) ⇒
           runningOp match {
-            case Some((_, requester)) ⇒ requester ! addr
+            case Some((_, requester)) ⇒ requester ! address
             case None                 ⇒ log.warning("did not expect {}", op)
           }
           stay using d.copy(runningOp = None)
@@ -242,7 +241,7 @@ private[akka] class ClientFSM(name: RoleName, controllerAddr: InetSocketAddress)
 
           val cmdFuture = TestConductor().transport.managementCommand(SetThrottle(t.target, t.direction, mode))
 
-          cmdFuture onSuccess {
+          cmdFuture foreach {
             case true ⇒ self ! ToServer(Done)
             case _ ⇒ throw new RuntimeException("Throttle was requested from the TestConductor, but no transport " +
               "adapters available that support throttling. Specify `testTransport(on = true)` in your MultiNodeConfig")

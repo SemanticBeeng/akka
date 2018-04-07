@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
 package akka.cluster.ddata
 
@@ -19,9 +19,13 @@ object ReplicatorORSetDeltaSpec extends MultiNodeConfig {
   val third = role("third")
 
   commonConfig(ConfigFactory.parseString("""
-    akka.loglevel = DEBUG
+    akka.loglevel = INFO
     akka.actor.provider = "cluster"
     akka.log-dead-letters-during-shutdown = off
+    akka.actor {
+      serialize-messages = off
+      allow-java-serialization = off
+    }
     """))
 
   testTransport(on = true)

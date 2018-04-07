@@ -1,51 +1,151 @@
 /**
- * Copyright (C) 2016 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2016-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.actor
 
 import scala.concurrent.duration._
 import scala.compat.java8.FutureConverters._
 import scala.compat.java8.OptionConverters._
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent._
 import java.util.concurrent.TimeUnit.MILLISECONDS
 
-import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import scala.concurrent.Promise
-
 import akka.Done
 import com.typesafe.config.Config
+
 import scala.concurrent.duration.FiniteDuration
 import scala.annotation.tailrec
 import com.typesafe.config.ConfigFactory
 import akka.pattern.after
-import java.util.concurrent.TimeoutException
+
 import scala.util.control.NonFatal
 import akka.event.Logging
 import akka.dispatch.ExecutionContexts
-import java.util.concurrent.Executors
+
 import scala.util.Try
 import scala.concurrent.Await
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicReference
 import java.util.function.Supplier
-import java.util.concurrent.CompletionStage
 import java.util.Optional
 
+import akka.util.OptionVal
+
 object CoordinatedShutdown extends ExtensionId[CoordinatedShutdown] with ExtensionIdProvider {
+  /**
+   * The first pre-defined phase that applications can add tasks to.
+   * Note that more phases can be added in the application's
+   * configuration by overriding this phase with an additional
+   * depends-on.
+   */
   val PhaseBeforeServiceUnbind = "before-service-unbind"
+
+  /**
+   * Stop accepting new incoming requests in for example HTTP.
+   */
   val PhaseServiceUnbind = "service-unbind"
+
+  /**
+   * Wait for requests that are in progress to be completed.
+   */
   val PhaseServiceRequestsDone = "service-requests-done"
+
+  /**
+   * Final shutdown of service endpoints.
+   */
   val PhaseServiceStop = "service-stop"
+  /**
+   * Phase for custom application tasks that are to be run
+   * after service shutdown and before cluster shutdown.
+   */
   val PhaseBeforeClusterShutdown = "before-cluster-shutdown"
+
+  /**
+   * Graceful shutdown of the Cluster Sharding regions.
+   */
   val PhaseClusterShardingShutdownRegion = "cluster-sharding-shutdown-region"
+
+  /**
+   * Emit the leave command for the node that is shutting down.
+   */
   val PhaseClusterLeave = "cluster-leave"
+
+  /**
+   * Shutdown cluster singletons
+   */
   val PhaseClusterExiting = "cluster-exiting"
+
+  /**
+   * Wait until exiting has been completed
+   */
   val PhaseClusterExitingDone = "cluster-exiting-done"
+
+  /**
+   * Shutdown the cluster extension
+   */
   val PhaseClusterShutdown = "cluster-shutdown"
+
+  /**
+   * Phase for custom application tasks that are to be run
+   * after cluster shutdown and before ActorSystem termination.
+   */
   val PhaseBeforeActorSystemTerminate = "before-actor-system-terminate"
+
+  /**
+   * Last phase. See terminate-actor-system and exit-jvm above.
+   * Don't add phases that depends on this phase because the
+   * dispatcher and scheduler of the ActorSystem have been shutdown.
+   */
   val PhaseActorSystemTerminate = "actor-system-terminate"
+
+  /**
+   * Reason for the shutdown, which can be used by tasks in case they need to do
+   * different things depending on what caused the shutdown. There are some
+   * predefined reasons, but external libraries applications may also define
+   * other reasons.
+   */
+  trait Reason
+
+  /**
+   * Scala API: The reason for the shutdown was unknown. Needed for backwards compatibility.
+   */
+  case object UnknownReason extends Reason
+
+  /**
+   * Java API: The reason for the shutdown was unknown. Needed for backwards compatibility.
+   */
+  def unknownReason: Reason = UnknownReason
+
+  /**
+   * Scala API: The shutdown was initiated by a JVM shutdown hook, e.g. triggered by SIGTERM.
+   */
+  object JvmExitReason extends Reason
+
+  /**
+   * Java API: The shutdown was initiated by a JVM shutdown hook, e.g. triggered by SIGTERM.
+   */
+  def jvmExitReason: Reason = JvmExitReason
+
+  /**
+   * Scala API: The shutdown was initiated by Cluster downing.
+   */
+  object ClusterDowningReason extends Reason
+
+  /**
+   * Java API: The shutdown was initiated by Cluster downing.
+   */
+  def clusterDowningReason: Reason = ClusterDowningReason
+
+  /**
+   * Scala API: The shutdown was initiated by Cluster leaving.
+   */
+  object ClusterLeavingReason extends Reason
+
+  /**
+   * Java API: The shutdown was initiated by Cluster leaving.
+   */
+  def clusterLeavingReason: Reason = ClusterLeavingReason
 
   @volatile private var runningJvmHook = false
 
@@ -59,6 +159,15 @@ object CoordinatedShutdown extends ExtensionId[CoordinatedShutdown] with Extensi
     val coord = new CoordinatedShutdown(system, phases)
     initPhaseActorSystemTerminate(system, conf, coord)
     initJvmHook(system, conf, coord)
+    // Avoid leaking actor system references when system is terminated before JVM is #23384
+    system.registerOnTermination {
+      coord.actorSystemJvmHook match {
+        case OptionVal.Some(cancellable) if !runningJvmHook && !cancellable.isCancelled ⇒
+          cancellable.cancel()
+          coord.actorSystemJvmHook = OptionVal.None
+        case _ ⇒
+      }
+    }
     coord
   }
 
@@ -98,29 +207,31 @@ object CoordinatedShutdown extends ExtensionId[CoordinatedShutdown] with Extensi
   }
 
   private def initJvmHook(system: ActorSystem, conf: Config, coord: CoordinatedShutdown): Unit = {
-    val runByJvmShutdownHook = conf.getBoolean("run-by-jvm-shutdown-hook")
+    val runByJvmShutdownHook = system.settings.JvmShutdownHooks && conf.getBoolean("run-by-jvm-shutdown-hook")
     if (runByJvmShutdownHook) {
-      coord.addJvmShutdownHook {
+      coord.actorSystemJvmHook = OptionVal.Some(coord.addCancellableJvmShutdownHook {
         runningJvmHook = true // avoid System.exit from PhaseActorSystemTerminate task
         if (!system.whenTerminated.isCompleted) {
-          coord.log.info("Starting coordinated shutdown from JVM shutdown hook")
-          try
-            Await.ready(coord.run(), coord.totalTimeout())
-          catch {
+          coord.log.debug("Starting coordinated shutdown from JVM shutdown hook")
+          try {
+            // totalTimeout will be 0 when no tasks registered, so at least 3.seconds
+            val totalTimeout = coord.totalTimeout().max(3.seconds)
+            Await.ready(coord.run(JvmExitReason), totalTimeout)
+          } catch {
             case NonFatal(e) ⇒
               coord.log.warning(
                 "CoordinatedShutdown from JVM shutdown failed: {}",
                 e.getMessage)
           }
         }
-      }
+      })
     }
   }
 
   /**
    * INTERNAL API
    */
-  private[akka] final case class Phase(dependsOn: Set[String], timeout: FiniteDuration, recover: Boolean)
+  private[akka] final case class Phase(dependsOn: Set[String], timeout: FiniteDuration, recover: Boolean, enabled: Boolean)
 
   /**
    * INTERNAL API
@@ -132,6 +243,7 @@ object CoordinatedShutdown extends ExtensionId[CoordinatedShutdown] with Extensi
     val defaultPhaseConfig = ConfigFactory.parseString(s"""
       timeout = $defaultPhaseTimeout
       recover = true
+      enabled = true
       depends-on = []
     """)
     phasesConf.root.unwrapped.asScala.toMap.map {
@@ -140,7 +252,8 @@ object CoordinatedShutdown extends ExtensionId[CoordinatedShutdown] with Extensi
         val dependsOn = c.getStringList("depends-on").asScala.toSet
         val timeout = c.getDuration("timeout", MILLISECONDS).millis
         val recover = c.getBoolean("recover")
-        k → Phase(dependsOn, timeout, recover)
+        val enabled = c.getBoolean("enabled")
+        k → Phase(dependsOn, timeout, recover, enabled)
       case (k, v) ⇒
         throw new IllegalArgumentException(s"Expected object value for [$k], got [$v]")
     }
@@ -165,8 +278,8 @@ object CoordinatedShutdown extends ExtensionId[CoordinatedShutdown] with Extensi
       if (unmarked(u)) {
         tempMark += u
         phases.get(u) match {
-          case Some(Phase(dependsOn, _, _)) ⇒ dependsOn.foreach(depthFirstSearch)
-          case None                         ⇒
+          case Some(p) ⇒ p.dependsOn.foreach(depthFirstSearch)
+          case None    ⇒
         }
         unmarked -= u // permanent mark
         tempMark -= u
@@ -182,7 +295,8 @@ object CoordinatedShutdown extends ExtensionId[CoordinatedShutdown] with Extensi
 final class CoordinatedShutdown private[akka] (
   system: ExtendedActorSystem,
   phases: Map[String, CoordinatedShutdown.Phase]) extends Extension {
-  import CoordinatedShutdown.Phase
+  import CoordinatedShutdown.Reason
+  import CoordinatedShutdown.UnknownReason
 
   /** INTERNAL API */
   private[akka] val log = Logging(system, getClass)
@@ -190,10 +304,11 @@ final class CoordinatedShutdown private[akka] (
   /** INTERNAL API */
   private[akka] val orderedPhases = CoordinatedShutdown.topologicalSort(phases)
   private val tasks = new ConcurrentHashMap[String, Vector[(String, () ⇒ Future[Done])]]
-  private val runStarted = new AtomicBoolean(false)
+  private val runStarted = new AtomicReference[Option[Reason]](None)
   private val runPromise = Promise[Done]()
 
-  private var _jvmHooksLatch = new AtomicReference[CountDownLatch](new CountDownLatch(0))
+  private val _jvmHooksLatch = new AtomicReference[CountDownLatch](new CountDownLatch(0))
+  @volatile private var actorSystemJvmHook: OptionVal[Cancellable] = OptionVal.None
 
   /**
    * INTERNAL API
@@ -243,39 +358,63 @@ final class CoordinatedShutdown private[akka] (
     addTask(phase, taskName)(() ⇒ task.get().toScala)
 
   /**
+   * The `Reason` for the shutdown as passed to the `run` method. `None` if the shutdown
+   * has not been started.
+   */
+  def shutdownReason(): Option[Reason] = runStarted.get()
+
+  /**
+   * The `Reason` for the shutdown as passed to the `run` method. `Optional.empty` if the shutdown
+   * has not been started.
+   */
+  def getShutdownReason(): Optional[Reason] = shutdownReason().asJava
+
+  /**
    * Scala API: Run tasks of all phases. The returned
    * `Future` is completed when all tasks have been completed,
    * or there is a failure when recovery is disabled.
    *
-   * It's safe to call this method multiple times. It will only run the once.
+   * It's safe to call this method multiple times. It will only run the shutdown sequence once.
    */
-  def run(): Future[Done] = run(None)
+  def run(reason: Reason): Future[Done] = run(reason, None)
+
+  @deprecated("Use the method with `reason` parameter instead", since = "2.5.8")
+  def run(): Future[Done] = run(UnknownReason)
 
   /**
    * Java API: Run tasks of all phases. The returned
    * `CompletionStage` is completed when all tasks have been completed,
    * or there is a failure when recovery is disabled.
    *
-   * It's safe to call this method multiple times. It will only run the once.
+   * It's safe to call this method multiple times. It will only run the shutdown sequence once.
    */
-  def runAll(): CompletionStage[Done] = run().toJava
+  def runAll(reason: Reason): CompletionStage[Done] = run(reason).toJava
+
+  @deprecated("Use the method with `reason` parameter instead", since = "2.5.8")
+  def runAll(): CompletionStage[Done] = runAll(UnknownReason)
 
   /**
    * Scala API: Run tasks of all phases including and after the given phase.
    * The returned `Future` is completed when all such tasks have been completed,
    * or there is a failure when recovery is disabled.
    *
-   * It's safe to call this method multiple times. It will only run the once.
+   * It's safe to call this method multiple times. It will only run shutdown sequence once.
    */
-  def run(fromPhase: Option[String]): Future[Done] = {
-    if (runStarted.compareAndSet(false, true)) {
+  def run(reason: Reason, fromPhase: Option[String]): Future[Done] = {
+    if (runStarted.compareAndSet(None, Some(reason))) {
       import system.dispatcher
       val debugEnabled = log.isDebugEnabled
       def loop(remainingPhases: List[String]): Future[Done] = {
         remainingPhases match {
           case Nil ⇒ Future.successful(Done)
+          case phase :: remaining if !phases(phase).enabled ⇒
+            tasks.get(phase) match {
+              case null  ⇒ // This pretty much is ok as there are no tasks
+              case tasks ⇒ log.info("Phase [{}] disabled through configuration, skipping [{}] tasks", phase, tasks.size)
+            }
+            loop(remaining)
           case phase :: remaining ⇒
-            val phaseResult = (tasks.get(phase) match {
+            val phaseResult = tasks.get(phase) match {
               case null ⇒
                 if (debugEnabled) log.debug("Performing phase [{}] with [0] tasks", phase)
                 Future.successful(Done)
@@ -327,7 +466,7 @@ final class CoordinatedShutdown private[akka] (
                     result
                 }
                 Future.firstCompletedOf(List(result, timeoutFut))
-            })
+            }
             if (remaining.isEmpty)
               phaseResult // avoid flatMap when system terminated in last phase
             else
@@ -345,15 +484,23 @@ final class CoordinatedShutdown private[akka] (
     runPromise.future
   }
 
+  @deprecated("Use the method with `reason` parameter instead", since = "2.5.8")
+  def run(fromPhase: Option[String]): Future[Done] =
+    run(UnknownReason, fromPhase)
+
   /**
    * Java API: Run tasks of all phases including and after the given phase.
    * The returned `CompletionStage` is completed when all such tasks have been completed,
    * or there is a failure when recovery is disabled.
    *
-   * It's safe to call this method multiple times. It will only run once.
+   * It's safe to call this method multiple times. It will only run the shutdown sequence once.
    */
+  def run(reason: Reason, fromPhase: Optional[String]): CompletionStage[Done] =
+    run(reason, fromPhase.asScala).toJava
+
+  @deprecated("Use the method with `reason` parameter instead", since = "2.5.8")
   def run(fromPhase: Optional[String]): CompletionStage[Done] =
-    run(fromPhase.asScala).toJava
+    run(UnknownReason, fromPhase)
 
   /**
    * The configured timeout for a given `phase`.
@@ -362,7 +509,7 @@ final class CoordinatedShutdown private[akka] (
    */
   def timeout(phase: String): FiniteDuration =
     phases.get(phase) match {
-      case Some(Phase(_, timeout, _)) ⇒ timeout
+      case Some(p) ⇒ p.timeout
       case None ⇒
         throw new IllegalArgumentException(s"Unknown phase [$phase]. All phases must be defined in configuration")
     }
@@ -383,33 +530,88 @@ final class CoordinatedShutdown private[akka] (
    * concurrently, but they are running before Akka internal shutdown
    * hooks, e.g. those shutting down Artery.
    */
-  @tailrec def addJvmShutdownHook[T](hook: ⇒ T): Unit = {
-    if (!runStarted.get) {
+  def addJvmShutdownHook[T](hook: ⇒ T): Unit = addCancellableJvmShutdownHook(hook)
+
+  /**
+   * Scala API: Add a JVM shutdown hook that will be run when the JVM process
+   * begins its shutdown sequence. Added hooks may run in any order
+   * concurrently, but they are running before Akka internal shutdown
+   * hooks, e.g. those shutting down Artery.
+   *
+   * The returned ``Cancellable`` makes it possible to de-register the hook. For example
+   * on actor system shutdown to avoid leaking references to the actor system in tests.
+   *
+   * For shutdown hooks that does not have any requirements on running before the Akka
+   * shutdown hooks the standard library JVM shutdown hooks APIs are better suited.
+   */
+  @tailrec def addCancellableJvmShutdownHook[T](hook: ⇒ T): Cancellable = {
+    if (runStarted.get == None) {
       val currentLatch = _jvmHooksLatch.get
       val newLatch = new CountDownLatch(currentLatch.getCount.toInt + 1)
       if (_jvmHooksLatch.compareAndSet(currentLatch, newLatch)) {
-        try Runtime.getRuntime.addShutdownHook(new Thread {
+        val thread = new Thread {
           override def run(): Unit = {
             try hook finally _jvmHooksLatch.get.countDown()
           }
-        }) catch {
+        }
+        thread.setName(s"${system.name}-shutdown-hook-${newLatch.getCount}")
+        try {
+          Runtime.getRuntime.addShutdownHook(thread)
+          new Cancellable {
+            @volatile var cancelled = false
+            def cancel(): Boolean = {
+              try {
+                if (Runtime.getRuntime.removeShutdownHook(thread)) {
+                  cancelled = true
+                  _jvmHooksLatch.get.countDown()
+                  true
+                } else {
+                  false
+                }
+              } catch {
+                case _: IllegalStateException ⇒
+                  // shutdown already in progress
+                  false
+              }
+            }
+            def isCancelled: Boolean = cancelled
+          }
+        } catch {
           case e: IllegalStateException ⇒
             // Shutdown in progress, if CoordinatedShutdown is created via a JVM shutdown hook (Artery)
             log.warning("Could not addJvmShutdownHook, due to: {}", e.getMessage)
             _jvmHooksLatch.get.countDown()
+            Cancellable.alreadyCancelled
         }
       } else
-        addJvmShutdownHook(hook) // lost CAS, retry
+        addCancellableJvmShutdownHook(hook) // lost CAS, retry
+    } else {
+      Cancellable.alreadyCancelled
     }
   }
+
+  /**
+   * Java API: Add a JVM shutdown hook that will be run when the JVM process
+   * begins its shutdown sequence. Added hooks may run in any order
+   * concurrently, but they are running before Akka internal shutdown
+   * hooks, e.g. those shutting down Artery.
+   */
+  def addJvmShutdownHook(hook: Runnable): Unit =
+    addJvmShutdownHook(hook.run())
 
   /**
    * Java API: Add a JVM shutdown hook that will be run when the JVM process
    * begins its shutdown sequence. Added hooks may run in an order
    * concurrently, but they are running before Akka internal shutdown
    * hooks, e.g. those shutting down Artery.
+   *
+   * The returned ``Cancellable`` makes it possible to de-register the hook. For example
+   * on actor system shutdown to avoid leaking references to the actor system in tests.
+   *
+   * For shutdown hooks that does not have any requirements on running before the Akka
+   * shutdown hooks the standard library JVM shutdown hooks APIs are better suited.
    */
-  def addJvmShutdownHook(hook: Runnable): Unit =
-    addJvmShutdownHook(hook.run())
+  def addCancellableJvmShutdownHook(hook: Runnable): Cancellable =
+    addCancellableJvmShutdownHook(hook.run())
 
 }

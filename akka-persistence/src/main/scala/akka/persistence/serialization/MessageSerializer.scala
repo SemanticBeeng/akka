@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2009-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2009-2018 Lightbend Inc. <https://www.lightbend.com>
  */
 
 package akka.persistence.serialization
@@ -15,7 +15,6 @@ import scala.collection.immutable.VectorBuilder
 import scala.concurrent.duration
 import akka.actor.Actor
 import scala.concurrent.duration.Duration
-import scala.language.existentials
 import java.io.NotSerializableException
 
 /**

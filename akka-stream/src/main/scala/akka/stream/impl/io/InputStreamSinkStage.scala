@@ -1,16 +1,18 @@
 /**
- * Copyright (C) 2015-2017 Lightbend Inc. <http://www.lightbend.com>
+ * Copyright (C) 2015-2018 Lightbend Inc. <https://www.lightbend.com>
  */
+
 package akka.stream.impl.io
 
 import java.io.{ IOException, InputStream }
 import java.util.concurrent.{ BlockingQueue, LinkedBlockingDeque, TimeUnit }
 
+import akka.annotation.InternalApi
 import akka.stream.Attributes.InputBuffer
 import akka.stream.impl.Stages.DefaultAttributes
 import akka.stream.impl.io.InputStreamSinkStage._
 import akka.stream.stage._
-import akka.stream.{ Attributes, Inlet, SinkShape }
+import akka.stream.{ AbruptStageTerminationException, Attributes, Inlet, SinkShape }
 import akka.util.ByteString
 
 import scala.annotation.tailrec
@@ -36,7 +38,7 @@ private[stream] object InputStreamSinkStage {
 /**
  * INTERNAL API
  */
-final private[stream] class InputStreamSinkStage(readTimeout: FiniteDuration) extends GraphStageWithMaterializedValue[SinkShape[ByteString], InputStream] {
+@InternalApi final private[stream] class InputStreamSinkStage(readTimeout: FiniteDuration) extends GraphStageWithMaterializedValue[SinkShape[ByteString], InputStream] {
 
   val in = Inlet[ByteString]("InputStreamSink.in")
   override def initialAttributes: Attributes = DefaultAttributes.inputStreamSink
@@ -49,6 +51,8 @@ final private[stream] class InputStreamSinkStage(readTimeout: FiniteDuration) ex
     val dataQueue = new LinkedBlockingDeque[StreamToAdapterMessage](maxBuffer + 2)
 
     val logic = new GraphStageLogic(shape) with StageWithCallback with InHandler {
+
+      var completionSignalled = false
 
       private val callback: AsyncCallback[AdapterToStageMessage] =
         getAsyncCallback {
@@ -76,15 +80,22 @@ final private[stream] class InputStreamSinkStage(readTimeout: FiniteDuration) ex
 
       override def onUpstreamFinish(): Unit = {
         dataQueue.add(Finished)
+        completionSignalled = true
         completeStage()
       }
 
       override def onUpstreamFailure(ex: Throwable): Unit = {
         dataQueue.add(Failed(ex))
+        completionSignalled = true
         failStage(ex)
       }
 
+      override def postStop(): Unit = {
+        if (!completionSignalled) dataQueue.add(Failed(new AbruptStageTerminationException(this)))
+      }
+
       setHandler(in, this)
+
     }
 
     (logic, new InputStreamAdapter(dataQueue, logic.wakeUp, readTimeout))
@@ -95,7 +106,7 @@ final private[stream] class InputStreamSinkStage(readTimeout: FiniteDuration) ex
  * INTERNAL API
  * InputStreamAdapter that interacts with InputStreamSinkStage
  */
-private[akka] class InputStreamAdapter(
+@InternalApi private[akka] class InputStreamAdapter(
   sharedBuffer: BlockingQueue[StreamToAdapterMessage],
   sendToStage:  (AdapterToStageMessage) ⇒ Unit,
   readTimeout:  FiniteDuration)
@@ -104,7 +115,7 @@ private[akka] class InputStreamAdapter(
   var isInitialized = false
   var isActive = true
   var isStageAlive = true
-  val subscriberClosedException = new IOException("Reactive stream is terminated, no reads are possible")
+  def subscriberClosedException = new IOException("Reactive stream is terminated, no reads are possible")
   var detachedChunk: Option[ByteString] = None
 
   @scala.throws(classOf[IOException])
