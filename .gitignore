@@ -11,6 +11,7 @@
 *.vim
 */project/boot
 project/.boot/
+project/.sbtboot/
 project/.ivy/
 */project/build/target
 */project/project.target.config-classes
